@@ -26,6 +26,15 @@ embedding:
   model: "text-embedding-3-small"
   base_url: "http://localhost:8317/v1/chat/completions/"
   timeout: "30s"
+eastmoney:
+  # 从浏览器复制完整cookie串，解决无头请求被拦截问题
+  cookie: ""
+  # 启用curl_cffi模拟浏览器TLS握手
+  use_curl_cffi: true
+  # curl_cffi impersonate配置，如 chrome136 / chrome124 / safari17_0
+  impersonate: "chrome136"
+  # python可执行文件
+  python_bin: "python3"
 rsshub:
   base_url: "http://localhost:1200"
   routes:

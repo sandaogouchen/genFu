@@ -200,11 +200,11 @@ func parseFupanBreadth(html string) (int, int, int, string) {
 
 func parseBreadthFromLegendLabels(html string) (int, int, int, string, bool) {
 	segment := extractBreadthSegment(html)
-	//fmt.Print(segment)
+	// fmt.Print(segment)
 	matches := legendLabelPattern.FindAllStringSubmatch(segment, -1)
-	if len(matches) == 0 && segment != html {
-		matches = legendLabelPattern.FindAllStringSubmatch(html, -1)
-	}
+	// if len(matches) == 0 && segment != html {
+	// 	matches = legendLabelPattern.FindAllStringSubmatch(html, -1)
+	// }
 	if len(matches) == 0 {
 		return 0, 0, 0, "", false
 	}

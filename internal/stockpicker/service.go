@@ -91,7 +91,8 @@ func (s *Service) PickStocks(ctx context.Context, req StockPickRequest) (StockPi
 
 	stockList, err := s.provider.GetStockList(ctx)
 	if err != nil {
-		return StockPickResponse{}, fmt.Errorf("get_stock_list_failed: %w", err)
+		log.Printf("[选股服务] 获取股票列表失败，降级继续 err=%v", err)
+		stockList = []tool.MarketItem{}
 	}
 	log.Printf("[选股服务] 数据准备完成 耗时=%v 新闻数=%d 股票数=%d", time.Since(dataStartTime), len(newsEvents), len(stockList))
 
@@ -184,13 +185,13 @@ func (s *Service) PickStocks(ctx context.Context, req StockPickRequest) (StockPi
 	// 11. 构建响应
 	log.Printf("[选股服务] 选股完成 最终股票数=%d 总耗时=%v", len(output.Stocks), time.Since(totalStartTime))
 	return StockPickResponse{
-		PickID:         pickID,
-		GeneratedAt:    time.Now(),
-		Stocks:         output.Stocks,
-		MarketData:     marketData,
-		NewsSummary:    output.MarketView,
-		Warnings:       s.buildWarnings(marketData, newsEvents, stockList),
-		ScreeningInfo:  screeningResult,
+		PickID:        pickID,
+		GeneratedAt:   time.Now(),
+		Stocks:        output.Stocks,
+		MarketData:    marketData,
+		NewsSummary:   output.MarketView,
+		Warnings:      s.buildWarnings(marketData, newsEvents, stockList),
+		ScreeningInfo: screeningResult,
 	}, nil
 }
 
@@ -202,10 +203,10 @@ func (s *Service) buildScreenerInput(
 	holdings []Position,
 ) string {
 	payload := map[string]interface{}{
-		"request":      req,
-		"market_data":  marketData,
-		"news_events":  newsEvents,
-		"holdings":     holdings,
+		"request":     req,
+		"market_data": marketData,
+		"news_events": newsEvents,
+		"holdings":    holdings,
 	}
 	raw, _ := json.Marshal(payload)
 	return fmt.Sprintf("请根据当前市场状况，生成股票筛选策略，严格输出JSON：\n%s", string(raw))

@@ -64,8 +64,14 @@ func main() {
 	}
 	investmentRepo := investment.NewRepository(database)
 	investmentSvc := investment.NewService(investmentRepo)
-	registry.Register(tool.NewInvestmentTool(investmentSvc))
-	registry.Register(tool.NewEastMoneyTool())
+	eastMoneyTool := tool.NewEastMoneyToolWithOptions(tool.EastMoneyOptions{
+		Cookie:      appConfig.EastMoney.Cookie,
+		UseCurlCFFI: appConfig.EastMoney.UseCurlCFFI,
+		Impersonate: appConfig.EastMoney.Impersonate,
+		PythonBin:   appConfig.EastMoney.PythonBin,
+	})
+	registry.Register(tool.NewInvestmentToolWithEastMoney(investmentSvc, eastMoneyTool))
+	registry.Register(eastMoneyTool)
 	registry.Register(tool.NewMarketDataTool(investmentSvc))
 	registry.Register(tool.NewCNInfoTool())
 	newsRepo := news.NewRepository(database)

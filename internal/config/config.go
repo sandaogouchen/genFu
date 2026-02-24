@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -14,6 +15,7 @@ type AppConfig struct {
 	PG        PGConfig        `yaml:"pg"`
 	LLM       LLMConfig       `yaml:"llm"`
 	Embedding EmbeddingConfig `yaml:"embedding"`
+	EastMoney EastMoneyConfig `yaml:"eastmoney"`
 	RSSHub    RSSHubConfig    `yaml:"rsshub"`
 	News      NewsConfig      `yaml:"news"`
 	NextOpen  NextOpenConfig  `yaml:"next_open"`
@@ -49,6 +51,13 @@ type EmbeddingConfig struct {
 	Model    string `yaml:"model"`
 	BaseURL  string `yaml:"base_url"`
 	Timeout  string `yaml:"timeout"`
+}
+
+type EastMoneyConfig struct {
+	Cookie      string `yaml:"cookie"`
+	UseCurlCFFI bool   `yaml:"use_curl_cffi"`
+	Impersonate string `yaml:"impersonate"`
+	PythonBin   string `yaml:"python_bin"`
 }
 
 type RSSHubConfig struct {
@@ -94,6 +103,7 @@ type NormalizedConfig struct {
 	PG        NormalizedPGConfig
 	LLM       NormalizedLLMConfig
 	Embedding NormalizedEmbeddingConfig
+	EastMoney NormalizedEastMoneyConfig
 	RSSHub    NormalizedRSSHubConfig
 	News      NormalizedNewsConfig
 	NextOpen  NormalizedNextOpenConfig
@@ -125,6 +135,13 @@ type NormalizedEmbeddingConfig struct {
 	Model    string
 	BaseURL  string
 	Timeout  time.Duration
+}
+
+type NormalizedEastMoneyConfig struct {
+	Cookie      string
+	UseCurlCFFI bool
+	Impersonate string
+	PythonBin   string
 }
 
 type NormalizedRSSHubConfig struct {
@@ -198,6 +215,12 @@ func normalize(cfg AppConfig) (NormalizedConfig, error) {
 			APIKey:   cfg.Embedding.APIKey,
 			Model:    cfg.Embedding.Model,
 			BaseURL:  cfg.Embedding.BaseURL,
+		},
+		EastMoney: NormalizedEastMoneyConfig{
+			Cookie:      strings.TrimSpace(cfg.EastMoney.Cookie),
+			UseCurlCFFI: cfg.EastMoney.UseCurlCFFI,
+			Impersonate: strings.TrimSpace(cfg.EastMoney.Impersonate),
+			PythonBin:   strings.TrimSpace(cfg.EastMoney.PythonBin),
 		},
 		RSSHub: NormalizedRSSHubConfig{
 			BaseURL:  cfg.RSSHub.BaseURL,
@@ -306,6 +329,13 @@ func normalize(cfg AppConfig) (NormalizedConfig, error) {
 		return NormalizedConfig{}, errors.New("invalid_embedding_timeout")
 	}
 	result.Embedding.Timeout = parsedEmbedTimeout
+
+	if result.EastMoney.Impersonate == "" {
+		result.EastMoney.Impersonate = "chrome136"
+	}
+	if result.EastMoney.PythonBin == "" {
+		result.EastMoney.PythonBin = "python3"
+	}
 
 	if result.RSSHub.BaseURL == "" {
 		result.RSSHub.BaseURL = "https://rsshub.app"

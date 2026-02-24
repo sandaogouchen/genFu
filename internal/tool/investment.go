@@ -11,15 +11,19 @@ import (
 )
 
 type InvestmentTool struct {
-	svc         *investment.Service
-	eastMoney   EastMoneyTool
-	marketData  MarketDataTool
+	svc        *investment.Service
+	eastMoney  EastMoneyTool
+	marketData MarketDataTool
 }
 
 func NewInvestmentTool(svc *investment.Service) InvestmentTool {
+	return NewInvestmentToolWithEastMoney(svc, NewEastMoneyTool())
+}
+
+func NewInvestmentToolWithEastMoney(svc *investment.Service, eastMoney EastMoneyTool) InvestmentTool {
 	return InvestmentTool{
 		svc:        svc,
-		eastMoney:  NewEastMoneyTool(),
+		eastMoney:  eastMoney,
 		marketData: NewMarketDataTool(svc),
 	}
 }
