@@ -53,7 +53,11 @@ var marketIndexAliases = map[string]string{
 	"期货连续":   "期货连续",
 }
 
-var riseFallPattern = regexp.MustCompile(`上涨\s*([0-9]+)\s*\([^)]*\)\s*停牌\s*([0-9]+)\s*\([^)]*\)\s*下跌\s*([0-9]+)\s*\([^)]*\)`)
+var (
+	riseFallPattern  = regexp.MustCompile(`上涨\s*([0-9]+)\s*\([^)]*\)\s*停牌\s*([0-9]+)\s*\([^)]*\)\s*下跌\s*([0-9]+)\s*\([^)]*\)`)
+	riseCountPattern = regexp.MustCompile(`上涨\s*([0-9,，]+)`)
+	downCountPattern = regexp.MustCompile(`下跌\s*([0-9,，]+)`)
+)
 
 // DataProvider 数据提供者接口
 type DataProvider interface {
@@ -547,15 +551,35 @@ func extractFupanRiseDown(payload map[string]interface{}) (int, int, bool) {
 
 func parseRiseDownFromText(text string) (int, int, bool) {
 	matches := riseFallPattern.FindStringSubmatch(text)
-	if len(matches) != 4 {
-		return 0, 0, false
+	if len(matches) == 4 {
+		up, upOK := toInt(matches[1])
+		down, downOK := toInt(matches[3])
+		if !upOK || !downOK {
+			return 0, 0, false
+		}
+		return up, down, true
 	}
-	up, upOK := toInt(matches[1])
-	down, downOK := toInt(matches[3])
+
+	up, upOK := parseCountFromText(text, riseCountPattern)
+	down, downOK := parseCountFromText(text, downCountPattern)
 	if !upOK || !downOK {
 		return 0, 0, false
 	}
 	return up, down, true
+}
+
+func parseCountFromText(text string, pattern *regexp.Regexp) (int, bool) {
+	if pattern == nil {
+		return 0, false
+	}
+	m := pattern.FindStringSubmatch(text)
+	if len(m) < 2 {
+		return 0, false
+	}
+	raw := strings.TrimSpace(m[1])
+	raw = strings.ReplaceAll(raw, ",", "")
+	raw = strings.ReplaceAll(raw, "，", "")
+	return toInt(raw)
 }
 
 func fillMarketSentiment(marketData *MarketData) {

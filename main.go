@@ -126,6 +126,7 @@ func main() {
 
 	// 注册股票筛选工具
 	registry.Register(stockpicker.NewStockScreenerTool(registry))
+	stockpicker.RegisterStockStrategyTools(registry)
 
 	analyzer := analyze.NewAnalyzer(klineAgent, fundManagerAgent, bullAgent, bearAgent, debateAgent, summaryAgent, registry, analyzeRepo)
 	tradeEngine := trade_signal.NewInvestmentEngine(investmentSvc)

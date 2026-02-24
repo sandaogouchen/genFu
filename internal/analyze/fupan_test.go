@@ -13,6 +13,22 @@ func TestParseFupanBreadth(t *testing.T) {
 	}
 }
 
+func TestParseFupanBreadthFromLegendLabel(t *testing.T) {
+	html := `
+<div class="legend">
+  <span class="legendLabel">上涨 1,304 (28%)</span>
+  <span class="legendLabel">平盘 12 (0%)</span>
+  <span class="legendLabel">下跌 3,273 (71%)</span>
+</div>`
+	up, halt, down, text := parseFupanBreadth(html)
+	if up != 1304 || halt != 12 || down != 3273 {
+		t.Fatalf("unexpected breadth from legendLabel: up=%d halt=%d down=%d", up, halt, down)
+	}
+	if text == "" {
+		t.Fatalf("expected legend breadth text")
+	}
+}
+
 func TestParseFupanIndexesFiltersStocks(t *testing.T) {
 	html := `<ul class="nav_list">
 <li>上证指数 4082.07 -51.95 -1.26%</li>

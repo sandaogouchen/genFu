@@ -13,6 +13,14 @@ import (
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
+var (
+	legendLabelPattern = regexp.MustCompile(`(?is)<[^>]*class\s*=\s*["'][^"']*\blegendLabel\b[^"']*["'][^>]*>(.*?)</[^>]+>`)
+	legendUpPattern    = regexp.MustCompile(`上涨\s*([0-9,，]+)`)
+	legendDownPattern  = regexp.MustCompile(`下跌\s*([0-9,，]+)`)
+	legendHaltPattern  = regexp.MustCompile(`停牌\s*([0-9,，]+)`)
+	legendFlatPattern  = regexp.MustCompile(`平盘\s*([0-9,，]+)`)
+)
+
 type FupanIndex struct {
 	Name       string `json:"name"`
 	Price      string `json:"price"`
@@ -148,19 +156,86 @@ func canonicalFupanIndexName(name string) string {
 }
 
 func parseFupanBreadth(html string) (int, int, int, string) {
+	if up, halt, down, breadth, ok := parseBreadthFromLegendLabels(html); ok {
+		return up, halt, down, breadth
+	}
+
 	plain := cleanHTML(html)
 	if anchor := strings.Index(plain, "个股涨跌图"); anchor >= 0 {
 		plain = plain[anchor:]
 	}
 	re := regexp.MustCompile(`上涨\s*([0-9]+)\s*\([^)]*\)\s*停牌\s*([0-9]+)\s*\([^)]*\)\s*下跌\s*([0-9]+)\s*\([^)]*\)`)
 	match := re.FindStringSubmatch(plain)
-	if len(match) != 4 {
+	if len(match) == 4 {
+		up, _ := parseInt(match[1])
+		halt, _ := parseInt(match[2])
+		down, _ := parseInt(match[3])
+		return up, halt, down, match[0]
+	}
+
+	up, upOK := parseBreadthCount(plain, legendUpPattern)
+	down, downOK := parseBreadthCount(plain, legendDownPattern)
+	if !upOK || !downOK {
 		return 0, 0, 0, ""
 	}
-	up, _ := parseInt(match[1])
-	halt, _ := parseInt(match[2])
-	down, _ := parseInt(match[3])
-	return up, halt, down, match[0]
+
+	halt, haltOK := parseBreadthCount(plain, legendHaltPattern)
+	if !haltOK {
+		halt, _ = parseBreadthCount(plain, legendFlatPattern)
+	}
+	return up, halt, down, fmt.Sprintf("上涨%d 下跌%d", up, down)
+}
+
+func parseBreadthFromLegendLabels(html string) (int, int, int, string, bool) {
+	matches := legendLabelPattern.FindAllStringSubmatch(html, -1)
+	if len(matches) == 0 {
+		return 0, 0, 0, "", false
+	}
+
+	labels := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if len(m) < 2 {
+			continue
+		}
+		text := cleanHTML(m[1])
+		if text != "" {
+			labels = append(labels, text)
+		}
+	}
+	if len(labels) == 0 {
+		return 0, 0, 0, "", false
+	}
+
+	joined := strings.Join(labels, " ")
+	up, upOK := parseBreadthCount(joined, legendUpPattern)
+	down, downOK := parseBreadthCount(joined, legendDownPattern)
+	if !upOK || !downOK {
+		return 0, 0, 0, "", false
+	}
+
+	halt, haltOK := parseBreadthCount(joined, legendHaltPattern)
+	if !haltOK {
+		halt, _ = parseBreadthCount(joined, legendFlatPattern)
+	}
+	return up, halt, down, joined, true
+}
+
+func parseBreadthCount(text string, pattern *regexp.Regexp) (int, bool) {
+	if pattern == nil {
+		return 0, false
+	}
+	m := pattern.FindStringSubmatch(text)
+	if len(m) < 2 {
+		return 0, false
+	}
+	return parseInt(normalizeCount(m[1]))
+}
+
+func normalizeCount(raw string) string {
+	s := strings.TrimSpace(raw)
+	s = strings.ReplaceAll(s, ",", "")
+	s = strings.ReplaceAll(s, "，", "")
+	return s
 }
 
 func parseInt(s string) (int, bool) {
