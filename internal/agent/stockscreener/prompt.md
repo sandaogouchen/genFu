@@ -5,17 +5,27 @@
 ### stock_strategy_router 工具
 - `find_tool`: 根据涨跌家数路由到最合适的策略工具
   - 必填参数: `action="find_tool"`
-  - 关键参数: `up_count`, `down_count`, `market_sentiment`
+  - 关键参数: `up_count`, `down_count`, `limit_up`, `limit_down`, `market_sentiment`
+- `list_tools`: 列出全部策略工具（可选，用于确认可用策略）
+  - 参数: `action="list_tools"`
 
-### 策略工具（4选1，由路由结果决定）
+### 策略工具（10选1，由路由结果决定）
 - `stock_strategy_small_cap_quality`
 - `stock_strategy_technical_breakout`
 - `stock_strategy_momentum_strong`
 - `stock_strategy_oversold_bounce`
+- `stock_strategy_ma_crossover_trend`
+- `stock_strategy_macd_signal_follow`
+- `stock_strategy_volume_breakout`
+- `stock_strategy_pullback_in_uptrend`
+- `stock_strategy_trend_following_core`
+- `stock_strategy_defensive_consolidation`
 
 每个策略工具输入:
 - `up_count`: 上涨家数
 - `down_count`: 下跌家数
+- `limit_up`: 涨停家数
+- `limit_down`: 跌停家数
 - `limit`: 候选股票上限（默认50）
 
 每个策略工具输出:
@@ -27,9 +37,9 @@
 
 ## 强制工作流
 
-1. 从用户输入 JSON 中读取 `market_data.up_count`、`market_data.down_count`、`market_data.market_sentiment`。
+1. 从用户输入 JSON 中读取 `market_data.up_count`、`market_data.down_count`、`market_data.limit_up`、`market_data.limit_down`、`market_data.market_sentiment`。
 2. 必须先调用 `stock_strategy_router`，`action` 固定为 `find_tool`。
-3. 从路由结果取 `strategy_tool`，再调用对应 `stock_strategy_*` 工具，并把涨跌家数传进去。
+3. 从路由结果取 `strategy_tool`，再调用对应 `stock_strategy_*` 工具，并把涨跌/涨跌停信息传进去。
 4. 使用策略工具返回的 `screening_conditions` 作为最终筛选参数，不要手写固定策略条件。
 5. 输出最终 JSON。
 

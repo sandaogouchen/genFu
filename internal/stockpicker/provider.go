@@ -192,12 +192,16 @@ func (p *DefaultDataProvider) extractMarketDataFromReport(report analyze.DailyRe
 		if limitDown, ok := toInt(metrics["limit_down"]); ok {
 			marketData.LimitDown = limitDown
 		}
+		log.Printf("[选股数据] market_metrics来源 up=%d down=%d limit_up=%d limit_down=%d", marketData.UpCount, marketData.DownCount, marketData.LimitUp, marketData.LimitDown)
 	}
 
 	// 使用同花顺“个股涨跌图”覆盖涨跌家数
 	if up, down, ok := extractFupanRiseDown(payload); ok {
+		log.Printf("[选股数据] fupan_report覆盖涨跌家数 up=%d down=%d", up, down)
 		marketData.UpCount = up
 		marketData.DownCount = down
+	} else {
+		log.Printf("[选股数据] fupan_report涨跌家数不可用，保留market_metrics up=%d down=%d", marketData.UpCount, marketData.DownCount)
 	}
 
 	fillMarketSentiment(&marketData)
@@ -532,8 +536,11 @@ func extractFupanRiseDown(payload map[string]interface{}) (int, int, bool) {
 	}
 	up, upOK := toInt(fupan["up_count"])
 	down, downOK := toInt(fupan["down_count"])
-	if upOK && downOK {
+	if upOK && downOK && isReasonableMarketBreadth(up, down) {
 		return up, down, true
+	}
+	if upOK && downOK {
+		log.Printf("[选股数据] 忽略异常fupan_report计数 up=%d down=%d", up, down)
 	}
 
 	if breadthText, ok := fupan["breadth_text"].(string); ok {
@@ -557,12 +564,18 @@ func parseRiseDownFromText(text string) (int, int, bool) {
 		if !upOK || !downOK {
 			return 0, 0, false
 		}
+		if !isReasonableMarketBreadth(up, down) {
+			return 0, 0, false
+		}
 		return up, down, true
 	}
 
 	up, upOK := parseCountFromText(text, riseCountPattern)
 	down, downOK := parseCountFromText(text, downCountPattern)
 	if !upOK || !downOK {
+		return 0, 0, false
+	}
+	if !isReasonableMarketBreadth(up, down) {
 		return 0, 0, false
 	}
 	return up, down, true
@@ -580,6 +593,10 @@ func parseCountFromText(text string, pattern *regexp.Regexp) (int, bool) {
 	raw = strings.ReplaceAll(raw, ",", "")
 	raw = strings.ReplaceAll(raw, "，", "")
 	return toInt(raw)
+}
+
+func isReasonableMarketBreadth(up int, down int) bool {
+	return up+down >= 500
 }
 
 func fillMarketSentiment(marketData *MarketData) {

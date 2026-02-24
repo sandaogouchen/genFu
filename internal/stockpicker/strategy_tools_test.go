@@ -59,3 +59,33 @@ func TestStockStrategyToolBuildConditions(t *testing.T) {
 		t.Fatalf("expected macd_golden=true, got %v", conditions["macd_golden"])
 	}
 }
+
+func TestStockStrategyRouterToolListTools(t *testing.T) {
+	tool := NewStockStrategyRouterTool()
+	result, err := tool.Execute(context.Background(), map[string]interface{}{
+		"action": "list_tools",
+	})
+	if err != nil {
+		t.Fatalf("list tools failed: %v", err)
+	}
+
+	output, ok := result.Output.(map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected output type: %T", result.Output)
+	}
+	strategies, ok := output["strategies"].([]map[string]interface{})
+	if ok {
+		if len(strategies) != 10 {
+			t.Fatalf("expected 10 strategies, got %d", len(strategies))
+		}
+		return
+	}
+
+	raw, ok := output["strategies"].([]interface{})
+	if !ok {
+		t.Fatalf("unexpected strategies type: %T", output["strategies"])
+	}
+	if len(raw) != 10 {
+		t.Fatalf("expected 10 strategies, got %d", len(raw))
+	}
+}

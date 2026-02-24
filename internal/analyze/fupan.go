@@ -21,6 +21,8 @@ var (
 	legendFlatPattern  = regexp.MustCompile(`平盘\s*([0-9,，]+)`)
 )
 
+const minReasonableBreadthTotal = 500
+
 type FupanIndex struct {
 	Name       string `json:"name"`
 	Price      string `json:"price"`
@@ -44,6 +46,10 @@ func (s *DailyReviewService) fetchFupanReport(ctx context.Context, date string) 
 	if date != "" {
 		url = fmt.Sprintf("https://stock.10jqka.com.cn/fupan/%s.shtml", date)
 	}
+	return fetchAndParseFupanURL(ctx, url, date)
+}
+
+func fetchAndParseFupanURL(ctx context.Context, url string, date string) (*FupanReport, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -170,6 +176,9 @@ func parseFupanBreadth(html string) (int, int, int, string) {
 		up, _ := parseInt(match[1])
 		halt, _ := parseInt(match[2])
 		down, _ := parseInt(match[3])
+		if !isReasonableBreadth(up, down) {
+			return 0, 0, 0, ""
+		}
 		return up, halt, down, match[0]
 	}
 
@@ -183,11 +192,19 @@ func parseFupanBreadth(html string) (int, int, int, string) {
 	if !haltOK {
 		halt, _ = parseBreadthCount(plain, legendFlatPattern)
 	}
+	if !isReasonableBreadth(up, down) {
+		return 0, 0, 0, ""
+	}
 	return up, halt, down, fmt.Sprintf("上涨%d 下跌%d", up, down)
 }
 
 func parseBreadthFromLegendLabels(html string) (int, int, int, string, bool) {
-	matches := legendLabelPattern.FindAllStringSubmatch(html, -1)
+	segment := extractBreadthSegment(html)
+	//fmt.Print(segment)
+	matches := legendLabelPattern.FindAllStringSubmatch(segment, -1)
+	if len(matches) == 0 && segment != html {
+		matches = legendLabelPattern.FindAllStringSubmatch(html, -1)
+	}
 	if len(matches) == 0 {
 		return 0, 0, 0, "", false
 	}
@@ -217,7 +234,54 @@ func parseBreadthFromLegendLabels(html string) (int, int, int, string, bool) {
 	if !haltOK {
 		halt, _ = parseBreadthCount(joined, legendFlatPattern)
 	}
+	if !isReasonableBreadth(up, down) {
+		return 0, 0, 0, "", false
+	}
 	return up, halt, down, joined, true
+}
+
+func extractBreadthSegment(html string) string {
+	if strings.TrimSpace(html) == "" {
+		return html
+	}
+
+	// Use structural DOM hints from the fupan page instead of text anchors.
+	// Typical targets: fp_item_4 -> chart1 -> pie_legend -> legendLabel / flsh_tip_num.
+	lower := strings.ToLower(html)
+	candidates := []string{
+		`class="pie_legend"`,
+		`class='pie_legend'`,
+		`id="chart1"`,
+		`id='chart1'`,
+		`id="fp_item_4"`,
+		`id='fp_item_4'`,
+		`class="legendlabel"`,
+		`class='legendlabel'`,
+		`class="flsh_tip_num"`,
+		`class='flsh_tip_num'`,
+	}
+
+	const (
+		prefixWindow = 1500
+		suffixWindow = 10000
+	)
+	for _, candidate := range candidates {
+		index := strings.Index(lower, candidate)
+		if index < 0 {
+			continue
+		}
+		start := index - prefixWindow
+		if start < 0 {
+			start = 0
+		}
+		end := index + len(candidate) + suffixWindow
+		if end > len(html) {
+			end = len(html)
+		}
+		return html[start:end]
+	}
+
+	return html
 }
 
 func parseBreadthCount(text string, pattern *regexp.Regexp) (int, bool) {
@@ -236,6 +300,11 @@ func normalizeCount(raw string) string {
 	s = strings.ReplaceAll(s, ",", "")
 	s = strings.ReplaceAll(s, "，", "")
 	return s
+}
+
+func isReasonableBreadth(up int, down int) bool {
+	total := up + down
+	return total >= minReasonableBreadthTotal
 }
 
 func parseInt(s string) (int, bool) {

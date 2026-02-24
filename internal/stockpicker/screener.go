@@ -525,47 +525,20 @@ func (t *StockScreenerTool) buildAppliedFilters(req ScreeningRequest) []string {
 
 // listStrategies 列出可用策略
 func (t *StockScreenerTool) listStrategies() (tool.ToolResult, error) {
-	strategies := []map[string]interface{}{
-		{
-			"name":        "small_cap_quality",
-			"description": "小市值绩优股策略：筛选成交额适中、技术形态良好的股票",
-			"conditions": map[string]interface{}{
-				"amount_min":      5e7,
-				"amount_max":      5e8,
-				"change_rate_min": -3,
-				"change_rate_max": 5,
-				"ma5_above_ma20":  true,
-			},
-		},
-		{
-			"name":        "technical_breakout",
-			"description": "技术面突破策略：筛选技术形态良好、有突破迹象的股票",
-			"conditions": map[string]interface{}{
-				"amount_min":      1e8,
-				"change_rate_min": 2,
-				"change_rate_max": 9,
-				"macd_golden":     true,
-				"volume_spike":    true,
-			},
-		},
-		{
-			"name":        "momentum_strong",
-			"description": "强势动量策略：筛选近期表现强势、有延续趋势的股票",
-			"conditions": map[string]interface{}{
-				"amount_min":      2e8,
-				"change_rate_min": 3,
-				"change_rate_max": 9,
-				"ma20_rising":     true,
-			},
-		},
-		{
-			"name":        "oversold_bounce",
-			"description": "超跌反弹策略：筛选RSI超卖、有反弹可能的股票",
-			"conditions": map[string]interface{}{
-				"amount_min":    5e7,
-				"rsi_oversold":  true,
-			},
-		},
+	strategies := make([]map[string]interface{}, 0, len(strategyOrder))
+	defaultCtx := strategyContext{UpRatio: 0.5}
+	for _, name := range strategyOrder {
+		meta, ok := strategyMetaMap[name]
+		if !ok || meta.Builder == nil {
+			continue
+		}
+		conditions := meta.Builder(defaultCtx)
+		conditions["strategy_type"] = meta.Name
+		strategies = append(strategies, map[string]interface{}{
+			"name":        meta.Name,
+			"description": meta.Description,
+			"conditions":  conditions,
+		})
 	}
 
 	return tool.ToolResult{
