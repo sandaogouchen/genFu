@@ -1,0 +1,688 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "GenFu API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "summary": "Health check",
+        "responses": {
+          "200": {
+            "description": "ok"
+          }
+        }
+      }
+    },
+    "/api/analyze": {
+      "post": {
+        "summary": "Analyze fund or stock",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyzeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Analysis result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnalyzeResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chat": {
+      "post": {
+        "summary": "Chat (SSE default)",
+        "description": "text/event-stream with chat events",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sse/chat": {
+      "post": {
+        "summary": "Chat (SSE)",
+        "description": "text/event-stream with chat events",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chat/history": {
+      "get": {
+        "summary": "Chat history",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Chat history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChatMessage"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/investment": {
+      "post": {
+        "summary": "Portfolio and trade operations",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvestmentRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/marketdata": {
+      "post": {
+        "summary": "Market data operations",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarketDataRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tool result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sse/analyze": {
+      "post": {
+        "summary": "Analyze fund or stock (SSE)",
+        "description": "text/event-stream with step and summary events",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnalyzeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/decision": {
+      "post": {
+        "summary": "Trade decision",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Decision result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sse/decision": {
+      "post": {
+        "summary": "Trade decision (SSE)",
+        "description": "text/event-stream with decision and execution events",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/workflow/stock": {
+      "post": {
+        "summary": "Stock/Fund workflow",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StockWorkflowInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Workflow output",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StockWorkflowOutput"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sse/workflow/stock": {
+      "post": {
+        "summary": "Stock/Fund workflow (SSE)",
+        "description": "text/event-stream with workflow events",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StockWorkflowInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/ws/chat": {
+      "get": {
+        "summary": "Chat WebSocket",
+        "description": "WebSocket endpoint for chat streaming",
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          }
+        }
+      }
+    },
+    "/ws/generate": {
+      "get": {
+        "summary": "WebSocket generate",
+        "description": "WebSocket endpoint for agent generation",
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AnalyzeRequest": {
+        "type": "object",
+        "required": [
+          "type",
+          "symbol"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["fund", "stock"]
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "kline": {
+            "type": "string"
+          },
+          "manager": {
+            "type": "string"
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "AnalyzeStep": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "input": {
+            "type": "string"
+          },
+          "output": {
+            "type": "string"
+          },
+          "tool_results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolResult"
+            }
+          }
+        }
+      },
+      "AnalyzeResponse": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "symbol": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AnalyzeStep"
+            }
+          },
+          "summary": {
+            "type": "string"
+          },
+          "report_id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "InvestmentRequest": {
+        "type": "object",
+        "description": "action supports create_user, create_account, upsert_instrument, set_position, get_position, delete_position, list_positions, list_fund_holdings, record_trade, record_cash_flow, record_valuation, get_portfolio_summary, analyze_pnl, list_trades",
+        "properties": {
+          "action": { "type": "string" },
+          "user_id": { "type": "integer", "format": "int64" },
+          "account_id": { "type": "integer", "format": "int64" },
+          "name": { "type": "string" },
+          "base_currency": { "type": "string" },
+          "symbol": { "type": "string" },
+          "asset_type": { "type": "string" },
+          "instrument_id": { "type": "integer", "format": "int64" },
+          "quantity": { "type": "number" },
+          "avg_cost": { "type": "number" },
+          "market_price": { "type": "number" },
+          "side": { "type": "string" },
+          "price": { "type": "number" },
+          "fee": { "type": "number" },
+          "trade_at": { "type": "string" },
+          "note": { "type": "string" },
+          "amount": { "type": "number" },
+          "currency": { "type": "string" },
+          "flow_type": { "type": "string" },
+          "flow_at": { "type": "string" },
+          "total_value": { "type": "number" },
+          "total_cost": { "type": "number" },
+          "valuation_at": { "type": "string" },
+          "limit": { "type": "number" },
+          "offset": { "type": "number" }
+        },
+        "required": ["action"]
+      },
+      "MarketDataRequest": {
+        "type": "object",
+        "description": "action supports get_stock_kline, get_stock_intraday, get_fund_kline, get_fund_intraday, get_fund_holdings_kline, get_fund_holdings_intraday",
+        "properties": {
+          "action": { "type": "string" },
+          "code": { "type": "string" },
+          "symbol": { "type": "string" },
+          "period": { "type": "string" },
+          "klt": { "type": "integer" },
+          "adjust": { "type": "string" },
+          "start": { "type": "string" },
+          "end": { "type": "string" },
+          "days": { "type": "integer" },
+          "account_id": { "type": "integer", "format": "int64" },
+          "asset_type": { "type": "string" },
+          "limit": { "type": "integer" }
+        },
+        "required": ["action"]
+      },
+      "DecisionRequest": {
+        "type": "object",
+        "properties": {
+          "account_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "report_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          "meta": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "DecisionResponse": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/DecisionOutput"
+          },
+          "raw": {
+            "type": "string"
+          },
+          "signals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TradeSignal"
+            }
+          },
+          "executions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExecutionResult"
+            }
+          },
+          "tool_results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ToolResult"
+            }
+          }
+        }
+      },
+      "DecisionOutput": {
+        "type": "object",
+        "properties": {
+          "decision_id": { "type": "string" },
+          "market_view": { "type": "string" },
+          "risk_notes": { "type": "string" },
+          "decisions": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/DecisionItem" }
+          }
+        }
+      },
+      "DecisionItem": {
+        "type": "object",
+        "properties": {
+          "account_id": { "type": "integer", "format": "int64" },
+          "symbol": { "type": "string" },
+          "name": { "type": "string" },
+          "asset_type": { "type": "string" },
+          "action": { "type": "string" },
+          "quantity": { "type": "number" },
+          "price": { "type": "number" },
+          "confidence": { "type": "number" },
+          "valid_until": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      },
+      "TradeSignal": {
+        "type": "object",
+        "properties": {
+          "account_id": { "type": "integer", "format": "int64" },
+          "symbol": { "type": "string" },
+          "name": { "type": "string" },
+          "asset_type": { "type": "string" },
+          "action": { "type": "string" },
+          "quantity": { "type": "number" },
+          "price": { "type": "number" },
+          "confidence": { "type": "number" },
+          "valid_until": { "type": "string" },
+          "reason": { "type": "string" },
+          "decision_id": { "type": "string" }
+        }
+      },
+      "ExecutionResult": {
+        "type": "object",
+        "properties": {
+          "signal": { "$ref": "#/components/schemas/TradeSignal" },
+          "trade": { "type": "object" },
+          "position": { "type": "object" },
+          "error": { "type": "string" },
+          "status": { "type": "string" }
+        }
+      },
+      "ToolResult": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "output": {
+            "type": "object"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "ChatMessage": {
+        "type": "object",
+        "properties": {
+          "role": { "type": "string" },
+          "content": { "type": "string" },
+          "name": { "type": "string" },
+          "tool_call_id": { "type": "string" }
+        }
+      },
+      "GenerateRequest": {
+        "type": "object",
+        "properties": {
+          "session_id": { "type": "string" },
+          "user_id": { "type": "string" },
+          "messages": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ChatMessage" }
+          }
+        }
+      },
+      "StockWorkflowInput": {
+        "type": "object",
+        "properties": {
+          "account_id": { "type": "integer", "format": "int64" },
+          "symbol": { "type": "string" },
+          "name": { "type": "string" },
+          "stock_news_routes": { "type": "array", "items": { "type": "string" } },
+          "industry_news_routes": { "type": "array", "items": { "type": "string" } },
+          "news_limit": { "type": "integer" }
+        },
+        "required": ["symbol"]
+      },
+      "HoldingPosition": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" },
+          "name": { "type": "string" },
+          "quantity": { "type": "number" },
+          "avg_cost": { "type": "number" },
+          "market_price": { "type": "number" },
+          "value": { "type": "number" },
+          "ratio": { "type": "number" }
+        }
+      },
+      "HoldingsOutput": {
+        "type": "object",
+        "properties": {
+          "positions": { "type": "array", "items": { "$ref": "#/components/schemas/HoldingPosition" } },
+          "total_value": { "type": "number" }
+        }
+      },
+      "MarketMove": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" },
+          "name": { "type": "string" },
+          "price": { "type": "number" },
+          "change": { "type": "number" },
+          "change_rate": { "type": "number" },
+          "amount": { "type": "number" },
+          "error": { "type": "string" }
+        }
+      },
+      "NewsSummaryOutput": {
+        "type": "object",
+        "properties": {
+          "summary": { "type": "string" },
+          "sentiment": { "type": "string" }
+        }
+      },
+      "StockWorkflowOutput": {
+        "type": "object",
+        "properties": {
+          "holdings": { "$ref": "#/components/schemas/HoldingsOutput" },
+          "holdings_market": { "type": "array", "items": { "$ref": "#/components/schemas/MarketMove" } },
+          "target_market": { "$ref": "#/components/schemas/MarketMove" },
+          "news": { "$ref": "#/components/schemas/NewsSummaryOutput" },
+          "bull_analysis": { "type": "string" },
+          "bear_analysis": { "type": "string" },
+          "debate_analysis": { "type": "string" },
+          "summary": { "type": "string" }
+        }
+      }
+    }
+  }
+}

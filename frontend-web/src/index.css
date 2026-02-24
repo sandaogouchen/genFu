@@ -1,0 +1,139 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Base colors - Light mode (柔和浅色主题) */
+    --background: 0 0% 98%;           /* zinc-50: #FAFAFA */
+    --foreground: 240 10% 3.9%;       /* zinc-900: #18181B */
+
+    /* Card */
+    --card: 0 0% 100%;                /* white */
+    --card-foreground: 240 10% 3.9%;  /* zinc-900 */
+
+    /* Primary */
+    --primary: 240 5.9% 10%;          /* zinc-900: #18181B */
+    --primary-foreground: 0 0% 98%;   /* zinc-50 */
+
+    /* Secondary */
+    --secondary: 240 4.8% 95.9%;      /* zinc-100 */
+    --secondary-foreground: 240 5.9% 10%; /* zinc-900 */
+
+    /* Muted */
+    --muted: 240 4.8% 95.9%;          /* zinc-100 */
+    --muted-foreground: 240 3.8% 46.1%; /* zinc-500 */
+
+    /* Accent - 柔和天蓝 */
+    --accent: 200 80% 50%;            /* sky-500 adjusted */
+    --accent-foreground: 0 0% 100%;   /* white */
+
+    /* Destructive */
+    --destructive: 0 84.2% 60.2%;     /* red-500 */
+    --destructive-foreground: 0 0% 98%;
+
+    /* Success */
+    --success: 142 76% 36%;           /* emerald-600 */
+    --success-foreground: 0 0% 98%;
+
+    /* Border & Input */
+    --border: 240 5.9% 90%;           /* zinc-200 */
+    --input: 240 5.9% 90%;            /* zinc-200 */
+    --ring: 200 80% 50%;              /* sky */
+
+    /* Warning */
+    --warning: 38 92% 50%;            /* amber-500 */
+
+    /* Radius */
+    --radius: 0.75rem;                /* 12px for rounded-xl */
+  }
+
+  .dark {
+    /* Base colors - Dark mode (优化深色主题) */
+    --background: 222 47% 11%;        /* slate-900: #0F172A */
+    --foreground: 210 40% 98%;        /* slate-50: #F8FAFC */
+
+    /* Card */
+    --card: 217 33% 17%;              /* slate-800: #1E293B */
+    --card-foreground: 210 40% 98%;   /* slate-50 */
+
+    /* Primary */
+    --primary: 210 40% 98%;           /* slate-50 */
+    --primary-foreground: 222 47% 11%; /* slate-900 */
+
+    /* Secondary */
+    --secondary: 215 20% 25%;         /* slate-700 adjusted */
+    --secondary-foreground: 210 40% 98%; /* slate-50 */
+
+    /* Muted */
+    --muted: 215 20% 25%;             /* slate-700 adjusted */
+    --muted-foreground: 215 16% 47%;  /* slate-400 */
+
+    /* Accent - 柔和天蓝 */
+    --accent: 199 89% 48%;            /* sky-500: #0EA5E9 */
+    --accent-foreground: 0 0% 100%;   /* white */
+
+    /* Destructive */
+    --destructive: 0 62.8% 40%;       /* red-700 adjusted */
+    --destructive-foreground: 210 40% 98%;
+
+    /* Success */
+    --success: 142 76% 36%;           /* emerald-600 */
+    --success-foreground: 0 0% 98%;
+
+    /* Border & Input */
+    --border: 215 20% 25%;            /* slate-700 adjusted */
+    --input: 215 20% 25%;             /* slate-700 adjusted */
+    --ring: 199 89% 48%;              /* sky-500 */
+
+    /* Warning */
+    --warning: 38 92% 50%;            /* amber-500 */
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+    font-feature-settings: "rlig" 1, "calt" 1;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Focus visible styles */
+  :focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--ring));
+  }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.5);
+  }
+}
+
+@layer utilities {
+  /* Smooth transitions for theme changes */
+  .theme-transition {
+    @apply transition-colors duration-200;
+  }
+}

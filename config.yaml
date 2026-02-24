@@ -1,0 +1,62 @@
+server:
+  port: 8080
+pg:
+  dsn: "file:genfu.db?_foreign_keys=on"
+  max_open_conns: 10
+  max_idle_conns: 10
+  conn_max_lifetime: "30m"
+llm:
+  # endpoint: "https://aihubmix.com/v1/"
+  # api_key: "sk-b4CBTK1q4MbeOvVx745c567aC3604603B1699bBe2043828f"
+  # model: "gemini-3-flash-preview"
+  endpoint: "http://localhost:8317/v1/chat/completions/"
+  api_key: "sk-sw4heaw39usffnoaw9"
+  model: "glm-5"
+
+  timeout: "600s"
+  temperature: 0.2
+  retry_count: 2
+  retry_delay: "300ms"
+  hedge_delay: "1500ms"
+  max_inflight: 4
+embedding:
+  provider: "openai"
+  api_key: "sk-sw4heaw39usffnoaw9"
+  #model: "text-embedding-3-small"
+  model: "text-embedding-3-small"
+  base_url: "http://localhost:8317/v1/chat/completions/"
+  timeout: "30s"
+rsshub:
+  base_url: "http://localhost:1200"
+  routes:
+    - "/eastmoney/search/科技"
+    - "/eastmoney/search/财经"
+    - "/eastmoney/search/股票"
+  poll_interval: "1m"
+  max_items: 20
+  timeout: "10s"
+news:
+  account_id: 1
+  brief_limit: 20
+  keywords: []
+  pipeline_enabled: true
+  pipeline:
+    pre_market_time: "08:30"
+    intraday_interval: "30m"
+    trading_start: "09:30"
+    trading_end: "15:00"
+    lookback_duration: "72h"
+next_open:
+  enabled: true
+  hour: 19
+  minute: 30
+  account_id: 1
+  news_limit: 10
+access:
+  enabled: false
+  api_keys:
+    - "sk-sw4heaw39usffnoaw9"
+  allow_paths:
+    - "/healthz"
+    - "/docs"
+    - "/openapi.json"
