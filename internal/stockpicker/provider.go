@@ -122,7 +122,7 @@ func (p *DefaultDataProvider) GetMarketData(ctx context.Context, days int) (Mark
 
 	// 优先尝试从每日复盘报告获取数据
 	if p.analyzeRepo != nil {
-		report, err := p.analyzeRepo.GetLatestDailyReviewReport(ctx)
+		report, err := p.selectDailyReviewReportForMarketData(ctx)
 		if err == nil && report.ID > 0 {
 			// 检查报告是否是今天的（交易日15:30后生成）
 			if p.isReportFresh(report.CreatedAt) {
@@ -138,6 +138,48 @@ func (p *DefaultDataProvider) GetMarketData(ctx context.Context, days int) (Mark
 	// 回退到实时接口获取
 	log.Printf("[选股数据] 每日复盘报告不可用，使用实时接口获取")
 	return p.getMarketDataFromAPI(ctx)
+}
+
+func (p *DefaultDataProvider) selectDailyReviewReportForMarketData(ctx context.Context) (analyze.DailyReviewReport, error) {
+	report, err := p.analyzeRepo.GetLatestDailyReviewReport(ctx)
+	if err != nil || report.ID <= 0 {
+		return report, err
+	}
+	now := time.Now().In(p.location)
+	if !p.isCNTradingSession(now) {
+		return report, nil
+	}
+
+	candidates, listErr := p.analyzeRepo.ListLatestDailyReviewReports(ctx, 5)
+	if listErr != nil {
+		log.Printf("[选股数据] 获取历史复盘报告失败，继续使用最新报告 report_id=%d err=%v", report.ID, listErr)
+		return report, nil
+	}
+
+	// 交易时段优先使用昨日（或最近非当日）且包含可用涨跌家数的复盘报告。
+	for _, candidate := range candidates {
+		if candidate.ID <= 0 || sameCalendarDayInLocation(candidate.CreatedAt, now, p.location) {
+			continue
+		}
+		if reportHasUsableFupanBreadth(candidate) {
+			log.Printf("[选股数据] 交易时段优先使用昨日报告(含fupan涨跌家数) report_id=%d created_at=%s", candidate.ID, candidate.CreatedAt.Format("2006-01-02 15:04"))
+			return candidate, nil
+		}
+	}
+
+	// 若未找到可用fupan涨跌家数，仍优先回退到最近非当日报告，避免使用盘中未完结报告。
+	for _, candidate := range candidates {
+		if candidate.ID > 0 && !sameCalendarDayInLocation(candidate.CreatedAt, now, p.location) {
+			log.Printf("[选股数据] 交易时段使用昨日报告 report_id=%d created_at=%s", candidate.ID, candidate.CreatedAt.Format("2006-01-02 15:04"))
+			return candidate, nil
+		}
+	}
+
+	// 无昨日数据可用时才继续使用最新报告。
+	if sameCalendarDayInLocation(report.CreatedAt, now, p.location) {
+		log.Printf("[选股数据] 交易时段未找到昨日报告，继续使用今日报告 report_id=%d", report.ID)
+	}
+	return report, nil
 }
 
 // isReportFresh 检查报告是否新鲜（当天15:30后生成的报告视为有效）
@@ -157,6 +199,31 @@ func (p *DefaultDataProvider) isReportFresh(createdAt time.Time) bool {
 
 	// 现在15:30之后，只接受今天15:30之后的报告
 	return reportTime.After(today1530) || reportTime.Equal(today1530)
+}
+
+func (p *DefaultDataProvider) isCNTradingSession(now time.Time) bool {
+	local := now.In(p.location)
+	switch local.Weekday() {
+	case time.Saturday, time.Sunday:
+		return false
+	}
+	minute := local.Hour()*60 + local.Minute()
+	// A股常规交易时段：09:30-11:30, 13:00-15:00
+	inMorning := minute >= 9*60+30 && minute < 11*60+30
+	inAfternoon := minute >= 13*60 && minute < 15*60
+	return inMorning || inAfternoon
+}
+
+func sameCalendarDayInLocation(a time.Time, b time.Time, loc *time.Location) bool {
+	aa := a.In(loc)
+	bb := b.In(loc)
+	return aa.Year() == bb.Year() && aa.Month() == bb.Month() && aa.Day() == bb.Day()
+}
+
+func reportHasUsableFupanBreadth(report analyze.DailyReviewReport) bool {
+	payload := unwrapDailyReviewPayload(report.Request)
+	_, _, ok := extractFupanRiseDown(payload)
+	return ok
 }
 
 // extractMarketDataFromReport 从每日复盘报告中提取大盘数据

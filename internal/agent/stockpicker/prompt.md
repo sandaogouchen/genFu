@@ -99,6 +99,28 @@
 ### 风险监控
 列出需要持续监控的风险点，触发时需要重新评估
 
+## 策略级行动指南（新增，必须输出）
+
+除个股 `operation_guide` 外，必须额外输出一个**策略级**行动指南 `strategy_guide`，用于解释“本次筛选策略下，出现什么指标信号买入/卖出”：
+
+### 必填字段
+- `strategy_type`: 与筛选策略一致
+- `strategy_name`: 策略名称
+- `guide_text`: 一段自然语言行动指南
+- `trade_signals_json`: **严格 JSON 格式字符串**（注意是字符串，不是对象）
+
+### `trade_signals_json` 字符串内容要求
+必须是可被 `JSON.parse` 直接解析的 JSON 字符串，至少包含：
+- `strategy_type`
+- `buy_signals`（数组）
+- `sell_signals`（数组）
+- `risk_controls`（数组）
+
+每个买卖信号对象建议字段：
+- `indicator`: 指标名称（如 MACD / MA5/MA20 / RSI / 成交量）
+- `signal`: 触发条件
+- `action`: buy / sell
+
 ## 资产配置考量
 
 ### 行业分散度
@@ -123,6 +145,12 @@
 
 ```json
 {
+  "strategy_guide": {
+    "strategy_type": "technical_breakout",
+    "strategy_name": "技术面突破策略",
+    "guide_text": "当MACD金叉、MA5站上MA20且放量突破同时出现时分批买入；若MACD死叉或跌破MA20则卖出，严格执行止损。",
+    "trade_signals_json": "{\"strategy_type\":\"technical_breakout\",\"buy_signals\":[{\"indicator\":\"MACD\",\"signal\":\"DIF上穿DEA且红柱放大\",\"action\":\"buy\"},{\"indicator\":\"MA5/MA20\",\"signal\":\"MA5上穿并站稳MA20\",\"action\":\"buy\"},{\"indicator\":\"成交量\",\"signal\":\"放量突破关键压力位\",\"action\":\"buy\"}],\"sell_signals\":[{\"indicator\":\"MACD\",\"signal\":\"DIF下穿DEA且绿柱放大\",\"action\":\"sell\"},{\"indicator\":\"MA5/MA20\",\"signal\":\"MA5下穿MA20\",\"action\":\"sell\"}],\"risk_controls\":[\"单只仓位不超过20%\",\"触发止损立即离场\"]}"
+  },
   "stocks": [
     {
       "symbol": "600519",
@@ -200,3 +228,4 @@
 6. 考虑新闻对行业的影响，但不作为唯一依据
 7. 输出3-5只股票，确信度高者优先
 8. 技术面和基本面原因必须具体，避免模糊表述
+9. **必须输出 `strategy_guide`，且 `trade_signals_json` 必须是严格 JSON 字符串**

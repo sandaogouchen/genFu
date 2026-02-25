@@ -150,6 +150,7 @@ func (s *Service) PickStocks(ctx context.Context, req StockPickRequest) (StockPi
 	if err != nil {
 		return StockPickResponse{}, fmt.Errorf("parse_output_failed: %w", err)
 	}
+	s.ensureStrategyGuide(output, screeningOutput)
 
 	// 8. 补充资产配置信息
 	for i := range output.Stocks {
@@ -169,7 +170,7 @@ func (s *Service) PickStocks(ctx context.Context, req StockPickRequest) (StockPi
 	// 10. 存储操作指南到数据库
 	pickID := fmt.Sprintf("pick_%d", time.Now().Unix())
 	for i := range output.Stocks {
-		if output.Stocks[i].OperationGuide != nil {
+		if output.Stocks[i].OperationGuide != nil && s.guideRepo != nil {
 			output.Stocks[i].OperationGuide.Symbol = output.Stocks[i].Symbol
 			output.Stocks[i].OperationGuide.PickID = pickID
 			// 设置有效期（默认30天）
@@ -192,6 +193,7 @@ func (s *Service) PickStocks(ctx context.Context, req StockPickRequest) (StockPi
 		NewsSummary:   output.MarketView,
 		Warnings:      s.buildWarnings(marketData, newsEvents, stockList),
 		ScreeningInfo: screeningResult,
+		StrategyGuide: output.StrategyGuide,
 	}, nil
 }
 
@@ -342,12 +344,273 @@ func (s *Service) parseAgentOutput(content string) (*AgentOutput, error) {
 	content = strings.TrimSuffix(content, "```")
 	content = strings.TrimSpace(content)
 
-	var output AgentOutput
-	if err := json.Unmarshal([]byte(content), &output); err != nil {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(content), &root); err != nil {
 		return nil, fmt.Errorf("json_parse_error: %w", err)
 	}
 
+	var output AgentOutput
+	if raw, ok := root["stocks"]; ok {
+		if err := json.Unmarshal(raw, &output.Stocks); err != nil {
+			return nil, fmt.Errorf("stocks_parse_error: %w", err)
+		}
+	}
+	if raw, ok := root["market_view"]; ok {
+		_ = json.Unmarshal(raw, &output.MarketView)
+	}
+	if raw, ok := root["risk_notes"]; ok {
+		_ = json.Unmarshal(raw, &output.RiskNotes)
+	}
+	if raw, ok := root["strategy_guide"]; ok {
+		guide, err := parseStrategyGuide(raw)
+		if err != nil {
+			return nil, err
+		}
+		output.StrategyGuide = guide
+	}
+
 	return &output, nil
+}
+
+func parseStrategyGuide(raw json.RawMessage) (*StrategyGuide, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil, fmt.Errorf("strategy_guide_parse_error: %w", err)
+	}
+
+	guide := &StrategyGuide{}
+	_ = unmarshalJSONStringField(root, "strategy_type", &guide.StrategyType)
+	_ = unmarshalJSONStringField(root, "strategy_name", &guide.StrategyName)
+	_ = unmarshalJSONStringField(root, "guide_text", &guide.GuideText)
+
+	if tradeRaw, ok := root["trade_signals_json"]; ok {
+		tradeJSON, err := normalizeTradeSignalsJSON(tradeRaw)
+		if err == nil {
+			guide.TradeSignalsJSON = tradeJSON
+		}
+	}
+
+	return guide, nil
+}
+
+func unmarshalJSONStringField(root map[string]json.RawMessage, key string, out *string) error {
+	raw, ok := root[key]
+	if !ok {
+		return nil
+	}
+	return json.Unmarshal(raw, out)
+}
+
+func normalizeTradeSignalsJSON(raw json.RawMessage) (string, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return "", nil
+	}
+
+	var strVal string
+	if err := json.Unmarshal(raw, &strVal); err == nil {
+		normalized, ok := normalizeJSONString(strVal)
+		if !ok {
+			return "", errors.New("invalid_json_string")
+		}
+		return normalized, nil
+	}
+
+	var payload interface{}
+	if err := json.Unmarshal(raw, &payload); err == nil {
+		buf, err := json.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+		return string(buf), nil
+	}
+
+	return "", errors.New("unsupported_trade_signals_json_type")
+}
+
+func normalizeJSONString(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "```json")
+	raw = strings.TrimPrefix(raw, "```")
+	raw = strings.TrimSuffix(raw, "```")
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+
+	var payload interface{}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "", false
+	}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return "", false
+	}
+	return string(out), true
+}
+
+type strategySignal struct {
+	Indicator string `json:"indicator"`
+	Signal    string `json:"signal"`
+	Action    string `json:"action"`
+}
+
+type strategyTradeSignals struct {
+	StrategyType string           `json:"strategy_type"`
+	BuySignals   []strategySignal `json:"buy_signals"`
+	SellSignals  []strategySignal `json:"sell_signals"`
+	RiskControls []string         `json:"risk_controls,omitempty"`
+}
+
+func (s *Service) ensureStrategyGuide(output *AgentOutput, screeningOutput *AgentScreeningOutput) {
+	if output == nil {
+		return
+	}
+	if output.StrategyGuide == nil {
+		output.StrategyGuide = &StrategyGuide{}
+	}
+
+	guide := output.StrategyGuide
+	conditions := ScreeningRequest{}
+	if screeningOutput != nil {
+		conditions = screeningOutput.ScreeningConditions
+		if guide.StrategyType == "" {
+			guide.StrategyType = screeningOutput.ScreeningConditions.StrategyType
+		}
+		if guide.StrategyName == "" {
+			guide.StrategyName = screeningOutput.StrategyName
+		}
+	}
+
+	if strings.TrimSpace(guide.GuideText) == "" {
+		guide.GuideText = s.buildStrategyGuideText(guide.StrategyName, conditions)
+	}
+	if normalized, ok := normalizeJSONString(guide.TradeSignalsJSON); ok {
+		guide.TradeSignalsJSON = normalized
+		return
+	}
+	guide.TradeSignalsJSON = s.buildStrategyTradeSignalsJSON(guide.StrategyType, conditions)
+}
+
+func (s *Service) buildStrategyGuideText(strategyName string, conditions ScreeningRequest) string {
+	name := strings.TrimSpace(strategyName)
+	if name == "" {
+		name = "当前筛选策略"
+	}
+
+	parts := []string{
+		fmt.Sprintf("%s下优先在买入信号共振时分批建仓，任一核心卖出信号触发即减仓或离场。", name),
+	}
+
+	if conditions.MACDGolden != nil && *conditions.MACDGolden {
+		parts = append(parts, "重点观察MACD金叉与红柱放大。")
+	}
+	if conditions.MA5AboveMA20 != nil && *conditions.MA5AboveMA20 {
+		parts = append(parts, "关注MA5站上MA20并保持向上。")
+	}
+	if conditions.VolumeSpike != nil && *conditions.VolumeSpike {
+		parts = append(parts, "放量突破有效，缩量回落需谨慎。")
+	}
+
+	parts = append(parts, "所有交易需先设止损，单笔仓位和总仓位遵守风险控制。")
+	return strings.Join(parts, "")
+}
+
+func (s *Service) buildStrategyTradeSignalsJSON(strategyType string, conditions ScreeningRequest) string {
+	buySignals := []strategySignal{}
+	sellSignals := []strategySignal{}
+
+	if conditions.MA5AboveMA20 != nil && *conditions.MA5AboveMA20 {
+		buySignals = append(buySignals, strategySignal{
+			Indicator: "MA5/MA20",
+			Signal:    "MA5上穿并连续2日站稳MA20",
+			Action:    "buy",
+		})
+		sellSignals = append(sellSignals, strategySignal{
+			Indicator: "MA5/MA20",
+			Signal:    "MA5下穿MA20且收盘跌破MA20",
+			Action:    "sell",
+		})
+	}
+	if conditions.MA20Rising != nil && *conditions.MA20Rising {
+		buySignals = append(buySignals, strategySignal{
+			Indicator: "MA20趋势",
+			Signal:    "MA20持续上行且股价位于MA20上方",
+			Action:    "buy",
+		})
+		sellSignals = append(sellSignals, strategySignal{
+			Indicator: "MA20趋势",
+			Signal:    "MA20拐头向下并失守MA20",
+			Action:    "sell",
+		})
+	}
+	if conditions.MACDGolden != nil && *conditions.MACDGolden {
+		buySignals = append(buySignals, strategySignal{
+			Indicator: "MACD",
+			Signal:    "DIF上穿DEA且红柱放大",
+			Action:    "buy",
+		})
+		sellSignals = append(sellSignals, strategySignal{
+			Indicator: "MACD",
+			Signal:    "DIF下穿DEA且绿柱放大",
+			Action:    "sell",
+		})
+	}
+	if conditions.RSIOversold != nil && *conditions.RSIOversold {
+		buySignals = append(buySignals, strategySignal{
+			Indicator: "RSI",
+			Signal:    "RSI低于30后重新上穿30",
+			Action:    "buy",
+		})
+		sellSignals = append(sellSignals, strategySignal{
+			Indicator: "RSI",
+			Signal:    "RSI接近70且回落",
+			Action:    "sell",
+		})
+	}
+	if conditions.VolumeSpike != nil && *conditions.VolumeSpike {
+		buySignals = append(buySignals, strategySignal{
+			Indicator: "成交量",
+			Signal:    "放量突破关键压力位",
+			Action:    "buy",
+		})
+		sellSignals = append(sellSignals, strategySignal{
+			Indicator: "成交量",
+			Signal:    "高位放量滞涨或跌破前低",
+			Action:    "sell",
+		})
+	}
+
+	if len(buySignals) == 0 {
+		buySignals = append(buySignals, strategySignal{
+			Indicator: "综合信号",
+			Signal:    "价格站稳关键均线并伴随量能改善",
+			Action:    "buy",
+		})
+	}
+	if len(sellSignals) == 0 {
+		sellSignals = append(sellSignals, strategySignal{
+			Indicator: "综合风控",
+			Signal:    "跌破关键支撑或策略前提失效",
+			Action:    "sell",
+		})
+	}
+
+	payload := strategyTradeSignals{
+		StrategyType: strategyType,
+		BuySignals:   buySignals,
+		SellSignals:  sellSignals,
+		RiskControls: []string{
+			"单笔亏损达到预设阈值立即止损",
+			"单只个股仓位不超过总资金20%",
+		},
+	}
+	raw, _ := json.Marshal(payload)
+	return string(raw)
 }
 
 // buildWarnings 构建警告信息

@@ -230,6 +230,42 @@ export default function StockPicker() {
             </Card>
           )}
 
+          {/* Strategy guide */}
+          {result.strategy_guide ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>策略行动指南</CardTitle>
+              </CardHeader>
+              <CardBody>
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    {result.strategy_guide.strategy_name ? (
+                      <span className="px-2 py-1 rounded border border-border bg-muted/50 text-foreground">
+                        {result.strategy_guide.strategy_name}
+                      </span>
+                    ) : null}
+                    {result.strategy_guide.strategy_type ? (
+                      <span className="px-2 py-1 rounded border border-border bg-muted/50 text-muted-foreground">
+                        {result.strategy_guide.strategy_type}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="text-sm text-muted-foreground leading-relaxed">
+                    {result.strategy_guide.guide_text}
+                  </p>
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1">
+                      买卖信息（严格 JSON 字符串）
+                    </div>
+                    <pre className="text-xs text-foreground bg-muted/40 border border-border rounded-lg p-3 overflow-auto whitespace-pre-wrap break-all">
+                      {formatStrictJson(result.strategy_guide.trade_signals_json)}
+                    </pre>
+                  </div>
+                </div>
+              </CardBody>
+            </Card>
+          ) : null}
+
           {/* Warnings */}
           {result.warnings && result.warnings.length > 0 && (
             <div className="bg-warning/10 border border-warning/20 rounded-lg p-4">
@@ -431,4 +467,12 @@ function StockCard({
       )}
     </div>
   );
+}
+
+function formatStrictJson(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
 }

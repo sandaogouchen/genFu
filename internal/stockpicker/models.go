@@ -12,28 +12,29 @@ type StockPickRequest struct {
 
 // StockPickResponse 选股响应
 type StockPickResponse struct {
-	PickID         string            `json:"pick_id"`
-	GeneratedAt    time.Time         `json:"generated_at"`
-	Stocks         []StockPick       `json:"stocks"`
-	MarketData     MarketData        `json:"market_data"`
-	NewsSummary    string            `json:"news_summary"`
-	Warnings       []string          `json:"warnings,omitempty"`
-	ScreeningInfo  *ScreeningResult  `json:"screening_info,omitempty"` // 筛选信息
+	PickID        string           `json:"pick_id"`
+	GeneratedAt   time.Time        `json:"generated_at"`
+	Stocks        []StockPick      `json:"stocks"`
+	MarketData    MarketData       `json:"market_data"`
+	NewsSummary   string           `json:"news_summary"`
+	Warnings      []string         `json:"warnings,omitempty"`
+	ScreeningInfo *ScreeningResult `json:"screening_info,omitempty"` // 筛选信息
+	StrategyGuide *StrategyGuide   `json:"strategy_guide,omitempty"` // 策略级买卖行动指南
 }
 
 // StockPick 单只选股结果
 type StockPick struct {
-	Symbol             string             `json:"symbol"`
-	Name               string             `json:"name"`
-	Industry           string             `json:"industry"`
-	CurrentPrice       float64            `json:"current_price"`
-	Recommendation     string             `json:"recommendation"` // buy/watch
-	Confidence         float64            `json:"confidence"`
-	TechnicalReasons   TechnicalReason    `json:"technical_reasons"`
-	FinancialAnalysis  *FinancialAnalysis `json:"financial_analysis,omitempty"`
-	OperationGuide     *OperationGuide    `json:"operation_guide,omitempty"`
-	RiskLevel          string             `json:"risk_level"` // low/medium/high
-	Allocation         Allocation         `json:"allocation"`
+	Symbol            string             `json:"symbol"`
+	Name              string             `json:"name"`
+	Industry          string             `json:"industry"`
+	CurrentPrice      float64            `json:"current_price"`
+	Recommendation    string             `json:"recommendation"` // buy/watch
+	Confidence        float64            `json:"confidence"`
+	TechnicalReasons  TechnicalReason    `json:"technical_reasons"`
+	FinancialAnalysis *FinancialAnalysis `json:"financial_analysis,omitempty"`
+	OperationGuide    *OperationGuide    `json:"operation_guide,omitempty"`
+	RiskLevel         string             `json:"risk_level"` // low/medium/high
+	Allocation        Allocation         `json:"allocation"`
 }
 
 // TechnicalReason 技术面原因
@@ -79,12 +80,12 @@ type Allocation struct {
 
 // MarketData 大盘数据摘要
 type MarketData struct {
-	IndexQuotes    []IndexQuote `json:"index_quotes"`
-	MarketSentiment string      `json:"market_sentiment"` // 市场情绪
-	UpCount        int          `json:"up_count"`         // 上涨家数
-	DownCount      int          `json:"down_count"`       // 下跌家数
-	LimitUp        int          `json:"limit_up"`         // 涨停数
-	LimitDown      int          `json:"limit_down"`       // 跌停数
+	IndexQuotes     []IndexQuote `json:"index_quotes"`
+	MarketSentiment string       `json:"market_sentiment"` // 市场情绪
+	UpCount         int          `json:"up_count"`         // 上涨家数
+	DownCount       int          `json:"down_count"`       // 下跌家数
+	LimitUp         int          `json:"limit_up"`         // 涨停数
+	LimitDown       int          `json:"limit_down"`       // 跌停数
 }
 
 // IndexQuote 指数行情
@@ -102,8 +103,8 @@ type NewsEvent struct {
 	Title       string    `json:"title"`
 	Summary     string    `json:"summary"`
 	Domains     []string  `json:"domains"`
-	Direction   string    `json:"direction"`   // bullish/bearish/mixed
-	Priority    int       `json:"priority"`    // 1-5
+	Direction   string    `json:"direction"` // bullish/bearish/mixed
+	Priority    int       `json:"priority"`  // 1-5
 	PublishedAt time.Time `json:"published_at"`
 }
 
@@ -118,9 +119,18 @@ type Position struct {
 
 // AgentOutput Agent输出结构
 type AgentOutput struct {
-	Stocks     []StockPick `json:"stocks"`
-	MarketView string      `json:"market_view"`
-	RiskNotes  string      `json:"risk_notes"`
+	Stocks        []StockPick    `json:"stocks"`
+	MarketView    string         `json:"market_view"`
+	RiskNotes     string         `json:"risk_notes"`
+	StrategyGuide *StrategyGuide `json:"strategy_guide,omitempty"`
+}
+
+// StrategyGuide 策略级行动指南
+type StrategyGuide struct {
+	StrategyType     string `json:"strategy_type,omitempty"`
+	StrategyName     string `json:"strategy_name,omitempty"`
+	GuideText        string `json:"guide_text"`         // 行动指南文字描述
+	TradeSignalsJSON string `json:"trade_signals_json"` // 严格 JSON 格式的买卖信号字符串
 }
 
 // OperationGuide 操作指南
@@ -140,7 +150,7 @@ type OperationGuide struct {
 
 // Condition 操作条件
 type Condition struct {
-	Type        string `json:"type"`          // price/news/technical/fundamental
-	Description string `json:"description"`   // 条件描述
+	Type        string `json:"type"`            // price/news/technical/fundamental
+	Description string `json:"description"`     // 条件描述
 	Value       string `json:"value,omitempty"` // 具体值
 }

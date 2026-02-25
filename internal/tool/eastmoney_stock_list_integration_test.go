@@ -15,9 +15,9 @@ import (
 //
 //	go test ./internal/tool -tags=integration -run TestEastMoneyGetStockListIntegration -v
 //
-// Cookie配置:
+// 配置:
 //
-//	服务运行时请在 config.yaml 的 eastmoney.cookie 配置浏览器Cookie串。
+//	服务运行时可通过 config.yaml 的 eastmoney.timeout / max_retries / min_interval 等参数调优请求行为。
 func TestEastMoneyGetStockListIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()

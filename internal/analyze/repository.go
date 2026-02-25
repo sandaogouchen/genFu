@@ -132,6 +132,51 @@ func (r *Repository) GetLatestDailyReviewReport(ctx context.Context) (DailyRevie
 	return report, nil
 }
 
+// ListLatestDailyReviewReports 获取最近N条每日复盘报告（原始map格式）
+func (r *Repository) ListLatestDailyReviewReports(ctx context.Context, limit int) ([]DailyReviewReport, error) {
+	if r == nil {
+		return nil, errors.New("repository_not_initialized")
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	rowLimit := limit
+	if rowLimit > 30 {
+		rowLimit = 30
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		select id, report_type, name, request, summary, created_at
+		from analyze_reports
+		where report_type = 'daily_review'
+		order by created_at desc
+		limit ?
+	`, rowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	result := make([]DailyReviewReport, 0, rowLimit)
+	for rows.Next() {
+		var report DailyReviewReport
+		var reqRaw []byte
+		var createdRaw sql.NullString
+		if err := rows.Scan(&report.ID, &report.ReportType, &report.Name, &reqRaw, &report.Summary, &createdRaw); err != nil {
+			return nil, err
+		}
+		if parsed, ok := db.ParseTime(createdRaw); ok {
+			report.CreatedAt = parsed
+		}
+		_ = json.Unmarshal(reqRaw, &report.Request)
+		result = append(result, report)
+	}
+	if result == nil {
+		result = []DailyReviewReport{}
+	}
+	return result, nil
+}
+
 func (r *Repository) CreateDailyReviewReport(ctx context.Context, name string, payload map[string]interface{}, summary string) (int64, error) {
 	if r == nil {
 		return 0, errors.New("repository_not_initialized")

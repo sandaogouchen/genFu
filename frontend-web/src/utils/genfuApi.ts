@@ -554,6 +554,13 @@ export type StockPick = {
   allocation: Allocation;
 };
 
+export type StrategyGuide = {
+  strategy_type?: string;
+  strategy_name?: string;
+  guide_text: string;
+  trade_signals_json: string;
+};
+
 export type IndexQuote = {
   code: string;
   name: string;
@@ -579,6 +586,7 @@ export type StockPickResponse = {
   market_data: MarketData;
   news_summary: string;
   warnings?: string[];
+  strategy_guide?: StrategyGuide;
 };
 
 export async function pickStocks(request: StockPickRequest): Promise<StockPickResponse> {

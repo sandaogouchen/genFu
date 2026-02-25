@@ -13,10 +13,10 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
+
+	"genFu/internal/tool/eastmoneyclient"
 )
 
 type StockQuote struct {
@@ -43,34 +43,23 @@ type EastMoneyTool struct {
 }
 
 type EastMoneyOptions struct {
-	Cookie      string
-	UseCurlCFFI bool
-	Impersonate string
-	PythonBin   string
+	Timeout     time.Duration
+	MaxRetries  int
+	MinInterval time.Duration
+	Referer     string
+	UserAgent   string
 }
 
 func NewEastMoneyTool() EastMoneyTool {
 	return NewEastMoneyToolWithOptions(EastMoneyOptions{})
 }
 
-func NewEastMoneyToolWithCookie(cookie string) EastMoneyTool {
-	return NewEastMoneyToolWithOptions(EastMoneyOptions{Cookie: cookie})
+func NewEastMoneyToolWithCookie(_ string) EastMoneyTool {
+	return NewEastMoneyToolWithOptions(EastMoneyOptions{})
 }
 
 func NewEastMoneyToolWithOptions(opts EastMoneyOptions) EastMoneyTool {
-	options := EastMoneyOptions{
-		Cookie:      strings.TrimSpace(opts.Cookie),
-		UseCurlCFFI: opts.UseCurlCFFI,
-		Impersonate: strings.TrimSpace(opts.Impersonate),
-		PythonBin:   strings.TrimSpace(opts.PythonBin),
-	}
-	if options.Impersonate == "" {
-		options.Impersonate = "chrome136"
-	}
-	if options.PythonBin == "" {
-		options.PythonBin = "python3"
-	}
-	return EastMoneyTool{options: options}
+	return EastMoneyTool{options: normalizeEastMoneyOptions(opts)}
 }
 
 func (t EastMoneyTool) Spec() ToolSpec {
@@ -144,16 +133,20 @@ type eastmoneyListItem struct {
 
 const (
 	maxEastmoneyListPageSize = 200
-	eastmoneyMaxRetries      = 3
 	eastmoneyUTToken         = "bd1d9ddb04089700cf9c27f6f7426281"
 )
 
 var eastmoneyHTTPClient = newEastmoneyHTTPClient()
 
-var eastmoneyFallbackHosts = []string{
+var eastmoneyRealtimeFallbackHosts = []string{
 	"https://push2.eastmoney.com",
 	"https://82.push2.eastmoney.com",
+}
+
+var eastmoneyHistoricalFallbackHosts = []string{
 	"https://push2his.eastmoney.com",
+	"https://push2.eastmoney.com",
+	"https://82.push2.eastmoney.com",
 }
 
 func newEastmoneyHTTPClient() *http.Client {
@@ -221,9 +214,51 @@ func fetchStockList(ctx context.Context, page int, pageSize int) ([]MarketItem, 
 		pageSize = 50
 	}
 	if pageSize > maxEastmoneyListPageSize {
-		return fetchStockListChunked(ctx, page, pageSize, maxEastmoneyListPageSize)
+		items, err := fetchStockListChunked(ctx, page, pageSize, maxEastmoneyListPageSize)
+		if err == nil {
+			return items, nil
+		}
+		// 分片全量拉取失败时，降级尝试较小样本，保证选股链路可继续。
+		log.Printf("[eastmoney] chunked stock list failed page=%d requested=%d err=%v", page, pageSize, err)
+		return fetchStockListBestEffort(ctx, page, pageSize, err)
 	}
 	return fetchStockListPage(ctx, page, pageSize)
+}
+
+func fetchStockListBestEffort(ctx context.Context, page int, requested int, baseErr error) ([]MarketItem, error) {
+	sizes := []int{maxEastmoneyListPageSize, 120, 80, 50}
+	seen := map[int]struct{}{}
+	lastErr := baseErr
+	for _, size := range sizes {
+		if size <= 0 || size > maxEastmoneyListPageSize {
+			continue
+		}
+		if requested > 0 && size > requested {
+			size = requested
+		}
+		if size <= 0 {
+			continue
+		}
+		if _, ok := seen[size]; ok {
+			continue
+		}
+		seen[size] = struct{}{}
+		items, err := fetchStockListPage(ctx, page, size)
+		if err == nil && len(items) > 0 {
+			if size < requested {
+				log.Printf("[eastmoney] stock list degraded requested=%d actual=%d", requested, len(items))
+			}
+			return items, nil
+		}
+		if err != nil {
+			lastErr = err
+			log.Printf("[eastmoney] stock list degraded attempt failed page=%d size=%d err=%v", page, size, err)
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("stock_list_best_effort_failed")
+	}
+	return nil, lastErr
 }
 
 func fetchStockListChunked(ctx context.Context, page int, pageSize int, chunkSize int) ([]MarketItem, error) {
@@ -364,36 +399,42 @@ func parseRawMessageFloat(raw json.RawMessage) float64 {
 	return 0
 }
 
-func parseStringFloat(s string) float64 {
-	if s == "" || s == "-" {
-		return 0
-	}
-	var f float64
-	fmt.Sscanf(s, "%f", &f)
-	return f
-}
-
 func doEastMoneyRequest(ctx context.Context, endpoint string, params url.Values) ([]byte, error) {
-	opts := eastMoneyOptionsFromContext(ctx)
-	if opts.UseCurlCFFI {
-		body, err := doEastMoneyRequestViaCurlCFFI(ctx, endpoint, params, opts)
-		if err == nil {
-			return body, nil
-		}
-		log.Printf("[eastmoney] curl_cffi failed, fallback native http err=%v", err)
+	if ctx == nil {
+		ctx = context.Background()
 	}
-
+	opts := eastMoneyOptionsFromContext(ctx)
+	retries := opts.MaxRetries
+	if retries <= 0 {
+		retries = 1
+	}
 	var lastErr error
-	for attempt := 1; attempt <= eastmoneyMaxRetries; attempt++ {
-		body, err := doEastMoneyRequestWithHostFallback(ctx, endpoint, params)
+	for attempt := 1; attempt <= retries; attempt++ {
+		attemptCtx := ctx
+		cancel := func() {}
+		if opts.Timeout > 0 {
+			if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > opts.Timeout {
+				attemptCtx, cancel = context.WithTimeout(ctx, opts.Timeout)
+			}
+		}
+		var (
+			body []byte
+			err  error
+		)
+		if shouldUseUTLSBackend(endpoint) {
+			body, err = doEastMoneyRequestWithUTLSHostFallback(attemptCtx, endpoint, params, opts)
+		} else {
+			body, err = doEastMoneyRequestWithHostFallback(attemptCtx, endpoint, params, opts)
+		}
+		cancel()
 		if err == nil {
 			return body, nil
 		}
 		lastErr = err
-		if attempt >= eastmoneyMaxRetries || !shouldRetryEastMoney(err) {
+		if attempt >= retries || !shouldRetryEastMoney(err) {
 			return nil, err
 		}
-		log.Printf("[eastmoney] request retry attempt=%d endpoint=%s err=%v", attempt+1, endpoint, err)
+		log.Printf("[eastmoney] request retry attempt=%d endpoint=%s err=%v", attempt+1, eastmoneyEndpointLabel(endpoint), err)
 		wait := time.Duration(attempt*200) * time.Millisecond
 		select {
 		case <-ctx.Done():
@@ -404,18 +445,23 @@ func doEastMoneyRequest(ctx context.Context, endpoint string, params url.Values)
 	return nil, lastErr
 }
 
-func doEastMoneyRequestWithHostFallback(ctx context.Context, endpoint string, params url.Values) ([]byte, error) {
+func doEastMoneyRequestWithUTLSHostFallback(ctx context.Context, endpoint string, params url.Values, opts EastMoneyOptions) ([]byte, error) {
 	hosts := candidateHostsForEndpoint(endpoint)
+	client := eastMoneyUTLSClientFromOptions(opts)
 	var lastErr error
 	for _, host := range hosts {
 		resolved := replaceEastmoneyHost(endpoint, host)
-		warmupEastmoneySession(ctx, resolved)
-		body, err := doEastMoneyRequestOnce(ctx, resolved, params)
+		targetURL := resolved + "?" + params.Encode()
+		body, err := client.GetWithContext(ctx, targetURL)
 		if err == nil {
-			return body, nil
+			if len(body) == 0 {
+				err = errors.New("empty_response_body")
+			} else {
+				return body, nil
+			}
 		}
 		lastErr = err
-		log.Printf("[eastmoney] host fallback failed host=%s err=%v", host, err)
+		log.Printf("[eastmoney] utls host failed endpoint=%s host=%s err=%v", eastmoneyEndpointLabel(resolved), host, err)
 	}
 	if lastErr == nil {
 		lastErr = errors.New("eastmoney_all_hosts_failed")
@@ -423,22 +469,38 @@ func doEastMoneyRequestWithHostFallback(ctx context.Context, endpoint string, pa
 	return nil, lastErr
 }
 
-func doEastMoneyRequestOnce(ctx context.Context, endpoint string, params url.Values) ([]byte, error) {
+func doEastMoneyRequestWithHostFallback(ctx context.Context, endpoint string, params url.Values, opts EastMoneyOptions) ([]byte, error) {
+	hosts := candidateHostsForEndpoint(endpoint)
+	var lastErr error
+	for _, host := range hosts {
+		resolved := replaceEastmoneyHost(endpoint, host)
+		warmupEastmoneySession(ctx, resolved, opts)
+		body, err := doEastMoneyRequestOnce(ctx, resolved, params, opts)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+		log.Printf("[eastmoney] host fallback failed endpoint=%s host=%s err=%v", eastmoneyEndpointLabel(resolved), host, err)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("eastmoney_all_hosts_failed")
+	}
+	return nil, lastErr
+}
+
+func doEastMoneyRequestOnce(ctx context.Context, endpoint string, params url.Values, opts EastMoneyOptions) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+params.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	req.Header.Set("Referer", "https://quote.eastmoney.com/")
+	req.Header.Set("User-Agent", opts.UserAgent)
+	req.Header.Set("Referer", opts.Referer)
 	req.Header.Set("Origin", "https://quote.eastmoney.com")
 	req.Header.Set("Accept", "application/json, text/javascript, */*; q=0.01")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 	req.Header.Set("Sec-Fetch-Site", "same-site")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Dest", "empty")
-	if cookie := eastMoneyOptionsFromContext(ctx).Cookie; cookie != "" {
-		req.Header.Set("Cookie", cookie)
-	}
 
 	resp, err := eastmoneyHTTPClient.Do(req)
 	if err != nil {
@@ -463,136 +525,26 @@ func doEastMoneyRequestOnce(ctx context.Context, endpoint string, params url.Val
 	return body, nil
 }
 
-func doEastMoneyRequestViaCurlCFFI(ctx context.Context, endpoint string, params url.Values, opts EastMoneyOptions) ([]byte, error) {
-	hosts := candidateHostsForEndpoint(endpoint)
-	impersonates := candidateImpersonates(opts.Impersonate)
-	var lastErr error
-	for _, host := range hosts {
-		resolved := replaceEastmoneyHost(endpoint, host)
-		for _, impersonate := range impersonates {
-			body, err := curlCFFIGet(ctx, resolved, params, opts, impersonate)
-			if err == nil {
-				return body, nil
-			}
-			lastErr = err
-			log.Printf("[eastmoney] curl_cffi host failed host=%s impersonate=%s err=%v", host, impersonate, err)
-			// 非瞬时错误（例如不支持的impersonate）直接尝试下一个指纹，不在当前组合重试
-			if isUnsupportedImpersonateError(err) {
-				continue
-			}
-		}
-	}
-	if lastErr == nil {
-		lastErr = errors.New("curl_cffi_all_hosts_failed")
-	}
-	return nil, lastErr
-}
-
-func curlCFFIGet(ctx context.Context, endpoint string, params url.Values, opts EastMoneyOptions, impersonate string) ([]byte, error) {
-	targetURL := endpoint + "?" + params.Encode()
-	pythonCode := `import os, sys, time
-from urllib.parse import urlparse
-from curl_cffi import requests
-
-url = sys.argv[1]
-impersonate = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else "chrome136"
-cookie = os.environ.get("EASTMONEY_COOKIE", "").strip()
-parsed = urlparse(url)
-base = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme and parsed.netloc else "https://push2.eastmoney.com"
-
-session = requests.Session()
-session.headers.update({
-    # 保持与页面访问一致，避免API请求特征过于“机器人化”
-    "User-Agent": "Mozilla/5.0",
-    "Referer": "https://quote.eastmoney.com/",
-    "Origin": "https://quote.eastmoney.com",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    "Sec-Fetch-Site": "same-site",
-    "Sec-Fetch-Mode": "cors",
-    "Sec-Fetch-Dest": "empty",
-})
-if cookie:
-    session.headers["Cookie"] = cookie
-
-for warmup in (
-    "https://quote.eastmoney.com/",
-    "https://quote.eastmoney.com/center/gridlist.html#hs_a_board",
-    base + "/",
-):
-    try:
-        session.get(warmup, impersonate=impersonate, timeout=8, default_headers=True)
-    except Exception:
-        pass
-
-last_err = None
-for _ in range(2):
-    try:
-        resp = session.get(url, impersonate=impersonate, timeout=15, default_headers=True)
-        resp.raise_for_status()
-        sys.stdout.buffer.write(resp.content)
-        sys.exit(0)
-    except Exception as exc:
-        last_err = exc
-        time.sleep(0.25)
-
-raise last_err
-	`
-
-	cmd := exec.CommandContext(ctx, opts.PythonBin, "-c", pythonCode, targetURL, impersonate)
-	cmd.Env = append(os.Environ(), "EASTMONEY_COOKIE="+opts.Cookie)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		errText := strings.TrimSpace(stderr.String())
-		if strings.Contains(errText, "No module named 'curl_cffi'") || strings.Contains(errText, "No module named curl_cffi") {
-			return nil, fmt.Errorf("curl_cffi_not_installed: %s", errText)
-		}
-		if errText == "" {
-			return nil, err
-		}
-		return nil, fmt.Errorf("%w: %s", err, errText)
-	}
-	if stdout.Len() == 0 {
-		return nil, errors.New("curl_cffi_empty_response")
-	}
-	return stdout.Bytes(), nil
-}
-
-func candidateImpersonates(primary string) []string {
-	result := make([]string, 0, 6)
-	appendUnique := func(v string) {
-		v = strings.TrimSpace(v)
-		if v == "" {
-			return
-		}
-		for _, existing := range result {
-			if existing == v {
-				return
-			}
-		}
-		result = append(result, v)
-	}
-
-	appendUnique(primary)
-	appendUnique("chrome")
-	appendUnique("chrome136")
-	appendUnique("chrome133")
-	appendUnique("chrome131")
-	appendUnique("safari17_0")
-	return result
-}
-
-func isUnsupportedImpersonateError(err error) bool {
-	if err == nil {
+func shouldUseUTLSBackend(endpoint string) bool {
+	if isLegacyHTTPOnlyEndpoint(endpoint) {
 		return false
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "impersonate") &&
-		(strings.Contains(msg, "not supported") || strings.Contains(msg, "unsupported"))
+	normalized := strings.ToLower(endpoint)
+	switch {
+	case strings.Contains(normalized, "/api/qt/stock/get"),
+		strings.Contains(normalized, "/api/qt/clist/get"),
+		strings.Contains(normalized, "/api/qt/stock/kline/get"):
+		return true
+	default:
+		return false
+	}
+}
+
+func isLegacyHTTPOnlyEndpoint(endpoint string) bool {
+	normalized := strings.ToLower(endpoint)
+	return strings.Contains(normalized, "/api/qt/stock/trends2/get") ||
+		strings.Contains(normalized, "fundf10.eastmoney.com") ||
+		strings.Contains(normalized, "fundgz.1234567.com.cn")
 }
 
 type eastMoneyOptionsKey struct{}
@@ -601,33 +553,54 @@ func withEastMoneyOptions(ctx context.Context, opts EastMoneyOptions) context.Co
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return context.WithValue(ctx, eastMoneyOptionsKey{}, opts)
+	return context.WithValue(ctx, eastMoneyOptionsKey{}, normalizeEastMoneyOptions(opts))
 }
 
 func eastMoneyOptionsFromContext(ctx context.Context) EastMoneyOptions {
-	defaults := EastMoneyOptions{
-		Impersonate: "chrome136",
-		PythonBin:   "python3",
-	}
 	if ctx == nil {
-		return defaults
+		return normalizeEastMoneyOptions(EastMoneyOptions{})
 	}
 	v := ctx.Value(eastMoneyOptionsKey{})
 	opts, ok := v.(EastMoneyOptions)
 	if !ok {
-		return defaults
+		return normalizeEastMoneyOptions(EastMoneyOptions{})
 	}
-	if strings.TrimSpace(opts.Impersonate) == "" {
-		opts.Impersonate = defaults.Impersonate
+	return normalizeEastMoneyOptions(opts)
+}
+
+func normalizeEastMoneyOptions(opts EastMoneyOptions) EastMoneyOptions {
+	defaults := eastmoneyclient.DefaultConfig()
+	if opts.Timeout <= 0 {
+		opts.Timeout = defaults.Timeout
 	}
-	if strings.TrimSpace(opts.PythonBin) == "" {
-		opts.PythonBin = defaults.PythonBin
+	if opts.MaxRetries <= 0 {
+		opts.MaxRetries = defaults.MaxRetries
 	}
-	opts.Cookie = strings.TrimSpace(opts.Cookie)
+	if opts.MinInterval <= 0 {
+		opts.MinInterval = defaults.MinInterval
+	}
+	opts.Referer = strings.TrimSpace(opts.Referer)
+	if opts.Referer == "" {
+		opts.Referer = defaults.Referer
+	}
+	opts.UserAgent = strings.TrimSpace(opts.UserAgent)
+	if opts.UserAgent == "" {
+		opts.UserAgent = defaults.UserAgent
+	}
 	return opts
 }
 
-func warmupEastmoneySession(ctx context.Context, endpoint string) {
+func eastMoneyUTLSClientFromOptions(opts EastMoneyOptions) *eastmoneyclient.Client {
+	return eastmoneyclient.NewClientWithConfig(eastmoneyclient.Config{
+		Timeout:     opts.Timeout,
+		MaxRetries:  1,
+		MinInterval: opts.MinInterval,
+		Referer:     opts.Referer,
+		UserAgent:   opts.UserAgent,
+	})
+}
+
+func warmupEastmoneySession(ctx context.Context, endpoint string, opts EastMoneyOptions) {
 	base := extractEndpointBase(endpoint)
 	if base == "" {
 		base = "https://quote.eastmoney.com"
@@ -642,7 +615,8 @@ func warmupEastmoneySession(ctx context.Context, endpoint string) {
 		if err != nil {
 			continue
 		}
-		req.Header.Set("User-Agent", "Mozilla/5.0")
+		req.Header.Set("User-Agent", opts.UserAgent)
+		req.Header.Set("Referer", opts.Referer)
 		req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
 		resp, err := eastmoneyHTTPClient.Do(req)
@@ -655,22 +629,43 @@ func warmupEastmoneySession(ctx context.Context, endpoint string) {
 }
 
 func candidateHostsForEndpoint(endpoint string) []string {
-	// Keep original host first, then fallbacks.
-	result := make([]string, 0, len(eastmoneyFallbackHosts)+1)
+	fallbackHosts := fallbackHostsForEndpoint(endpoint)
+	// Keep original host first, then endpoint-aware fallbacks.
+	result := make([]string, 0, len(fallbackHosts)+1)
+	seen := map[string]struct{}{}
 	original := extractEndpointBase(endpoint)
 	if original != "" {
 		result = append(result, original)
+		seen[original] = struct{}{}
 	}
-	for _, host := range eastmoneyFallbackHosts {
+	for _, host := range fallbackHosts {
 		if host == "" {
 			continue
 		}
-		if host == original {
+		if _, ok := seen[host]; ok {
 			continue
 		}
 		result = append(result, host)
+		seen[host] = struct{}{}
 	}
 	return result
+}
+
+func fallbackHostsForEndpoint(endpoint string) []string {
+	normalized := strings.ToLower(endpoint)
+	switch {
+	case strings.Contains(normalized, "/api/qt/stock/kline/get"):
+		return eastmoneyHistoricalFallbackHosts
+	case strings.Contains(normalized, "/api/qt/clist/get"),
+		strings.Contains(normalized, "/api/qt/stock/get"),
+		strings.Contains(normalized, "/api/qt/stock/trends2/get"):
+		return eastmoneyRealtimeFallbackHosts
+	default:
+		merged := make([]string, 0, len(eastmoneyRealtimeFallbackHosts)+len(eastmoneyHistoricalFallbackHosts))
+		merged = append(merged, eastmoneyRealtimeFallbackHosts...)
+		merged = append(merged, eastmoneyHistoricalFallbackHosts...)
+		return merged
+	}
 }
 
 func extractEndpointBase(endpoint string) string {
@@ -682,6 +677,17 @@ func extractEndpointBase(endpoint string) string {
 		return ""
 	}
 	return u.Scheme + "://" + u.Host
+}
+
+func eastmoneyEndpointLabel(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return endpoint
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return endpoint
+	}
+	return u.Scheme + "://" + u.Host + u.Path
 }
 
 func replaceEastmoneyHost(endpoint string, base string) string {

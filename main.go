@@ -65,10 +65,11 @@ func main() {
 	investmentRepo := investment.NewRepository(database)
 	investmentSvc := investment.NewService(investmentRepo)
 	eastMoneyTool := tool.NewEastMoneyToolWithOptions(tool.EastMoneyOptions{
-		Cookie:      appConfig.EastMoney.Cookie,
-		UseCurlCFFI: appConfig.EastMoney.UseCurlCFFI,
-		Impersonate: appConfig.EastMoney.Impersonate,
-		PythonBin:   appConfig.EastMoney.PythonBin,
+		Timeout:     appConfig.EastMoney.Timeout,
+		MaxRetries:  appConfig.EastMoney.MaxRetries,
+		MinInterval: appConfig.EastMoney.MinInterval,
+		Referer:     appConfig.EastMoney.Referer,
+		UserAgent:   appConfig.EastMoney.UserAgent,
 	})
 	registry.Register(tool.NewInvestmentToolWithEastMoney(investmentSvc, eastMoneyTool))
 	registry.Register(eastMoneyTool)

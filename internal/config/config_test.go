@@ -37,12 +37,12 @@ func TestNormalizeInvalidTimeout(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	cfg.LLM.Timeout = "bad"
-	normalized, err := normalize(cfg)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err = normalize(cfg)
+	if err == nil {
+		t.Fatalf("expected invalid_llm_timeout error")
 	}
-	if normalized.LLM.Timeout != 0 {
-		t.Fatalf("expected zero timeout")
+	if err.Error() != "invalid_llm_timeout" {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

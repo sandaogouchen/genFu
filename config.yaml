@@ -6,12 +6,12 @@ pg:
   max_idle_conns: 10
   conn_max_lifetime: "30m"
 llm:
-  # endpoint: "https://aihubmix.com/v1/"
-  # api_key: "sk-b4CBTK1q4MbeOvVx745c567aC3604603B1699bBe2043828f"
-  # model: "gemini-3-flash-preview"
-  endpoint: "http://localhost:8317/v1/chat/completions/"
-  api_key: "sk-sw4heaw39usffnoaw9"
-  model: "glm-5"
+  endpoint: "https://aihubmix.com/v1/"
+  api_key: "sk-b4CBTK1q4MbeOvVx745c567aC3604603B1699bBe2043828f"
+  model: "gemini-3-flash-preview"
+  # endpoint: "http://localhost:8317/v1/chat/completions/"
+  # api_key: "sk-sw4heaw39usffnoaw9"
+  # model: "glm-4.7"
 
   timeout: "600s"
   temperature: 0.2
@@ -27,14 +27,16 @@ embedding:
   base_url: "http://localhost:8317/v1/chat/completions/"
   timeout: "30s"
 eastmoney:
-  # 从浏览器复制完整cookie串，解决无头请求被拦截问题
-  cookie: ""
-  # 启用curl_cffi模拟浏览器TLS握手
-  use_curl_cffi: true
-  # curl_cffi impersonate配置，如 chrome136 / chrome124 / safari17_0
-  impersonate: "chrome136"
-  # python可执行文件
-  python_bin: "python3"
+  # uTLS 请求超时
+  timeout: "15s"
+  # 每次请求外层重试次数
+  max_retries: 3
+  # 连续请求最小间隔
+  min_interval: "200ms"
+  # 默认 Referer
+  referer: "https://quote.eastmoney.com/center/gridlist.html"
+  # 默认 User-Agent (Chrome 120)
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 rsshub:
   base_url: "http://localhost:1200"
   routes:

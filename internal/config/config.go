@@ -54,10 +54,11 @@ type EmbeddingConfig struct {
 }
 
 type EastMoneyConfig struct {
-	Cookie      string `yaml:"cookie"`
-	UseCurlCFFI bool   `yaml:"use_curl_cffi"`
-	Impersonate string `yaml:"impersonate"`
-	PythonBin   string `yaml:"python_bin"`
+	Timeout     string `yaml:"timeout"`
+	MaxRetries  int    `yaml:"max_retries"`
+	MinInterval string `yaml:"min_interval"`
+	Referer     string `yaml:"referer"`
+	UserAgent   string `yaml:"user_agent"`
 }
 
 type RSSHubConfig struct {
@@ -138,10 +139,11 @@ type NormalizedEmbeddingConfig struct {
 }
 
 type NormalizedEastMoneyConfig struct {
-	Cookie      string
-	UseCurlCFFI bool
-	Impersonate string
-	PythonBin   string
+	Timeout     time.Duration
+	MaxRetries  int
+	MinInterval time.Duration
+	Referer     string
+	UserAgent   string
 }
 
 type NormalizedRSSHubConfig struct {
@@ -216,12 +218,7 @@ func normalize(cfg AppConfig) (NormalizedConfig, error) {
 			Model:    cfg.Embedding.Model,
 			BaseURL:  cfg.Embedding.BaseURL,
 		},
-		EastMoney: NormalizedEastMoneyConfig{
-			Cookie:      strings.TrimSpace(cfg.EastMoney.Cookie),
-			UseCurlCFFI: cfg.EastMoney.UseCurlCFFI,
-			Impersonate: strings.TrimSpace(cfg.EastMoney.Impersonate),
-			PythonBin:   strings.TrimSpace(cfg.EastMoney.PythonBin),
-		},
+		EastMoney: NormalizedEastMoneyConfig{},
 		RSSHub: NormalizedRSSHubConfig{
 			BaseURL:  cfg.RSSHub.BaseURL,
 			Routes:   cfg.RSSHub.Routes,
@@ -330,11 +327,39 @@ func normalize(cfg AppConfig) (NormalizedConfig, error) {
 	}
 	result.Embedding.Timeout = parsedEmbedTimeout
 
-	if result.EastMoney.Impersonate == "" {
-		result.EastMoney.Impersonate = "chrome136"
+	eastmoneyTimeout := strings.TrimSpace(cfg.EastMoney.Timeout)
+	if eastmoneyTimeout == "" {
+		eastmoneyTimeout = "15s"
 	}
-	if result.EastMoney.PythonBin == "" {
-		result.EastMoney.PythonBin = "python3"
+	parsedEastMoneyTimeout, err := time.ParseDuration(eastmoneyTimeout)
+	if err != nil {
+		return NormalizedConfig{}, errors.New("invalid_eastmoney_timeout")
+	}
+	result.EastMoney.Timeout = parsedEastMoneyTimeout
+
+	result.EastMoney.MaxRetries = cfg.EastMoney.MaxRetries
+	if result.EastMoney.MaxRetries <= 0 {
+		result.EastMoney.MaxRetries = 3
+	}
+
+	eastmoneyMinInterval := strings.TrimSpace(cfg.EastMoney.MinInterval)
+	if eastmoneyMinInterval == "" {
+		eastmoneyMinInterval = "200ms"
+	}
+	parsedEastMoneyMinInterval, err := time.ParseDuration(eastmoneyMinInterval)
+	if err != nil {
+		return NormalizedConfig{}, errors.New("invalid_eastmoney_min_interval")
+	}
+	result.EastMoney.MinInterval = parsedEastMoneyMinInterval
+
+	result.EastMoney.Referer = strings.TrimSpace(cfg.EastMoney.Referer)
+	if result.EastMoney.Referer == "" {
+		result.EastMoney.Referer = "https://quote.eastmoney.com/center/gridlist.html"
+	}
+
+	result.EastMoney.UserAgent = strings.TrimSpace(cfg.EastMoney.UserAgent)
+	if result.EastMoney.UserAgent == "" {
+		result.EastMoney.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 	}
 
 	if result.RSSHub.BaseURL == "" {

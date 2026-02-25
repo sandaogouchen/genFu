@@ -1,9 +1,9 @@
 package tool
 
 import (
-	"log"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNormalizeSecID(t *testing.T) {
@@ -17,7 +17,6 @@ func TestNormalizeSecID(t *testing.T) {
 	}
 	for input, expected := range cases {
 		if got := normalizeSecID(input); got != expected {
-			log.Printf("normalizeSecID(%s)=%s", input, got)
 			t.Fatalf("normalizeSecID(%s)=%s", input, got)
 		}
 	}
@@ -38,40 +37,108 @@ func TestScaleHelpers(t *testing.T) {
 	}
 }
 
-func TestCandidateImpersonates(t *testing.T) {
-	got := candidateImpersonates("chrome136")
-	if len(got) == 0 {
-		t.Fatalf("candidateImpersonates returned empty list")
+func TestFallbackHostsForEndpoint(t *testing.T) {
+	realtime := fallbackHostsForEndpoint("https://push2.eastmoney.com/api/qt/clist/get")
+	if len(realtime) == 0 {
+		t.Fatalf("expected realtime hosts, got empty")
 	}
-	if got[0] != "chrome136" {
-		t.Fatalf("primary impersonate should be first, got=%v", got)
-	}
-	seen := map[string]bool{}
-	for _, item := range got {
-		if seen[item] {
-			t.Fatalf("duplicate impersonate candidate: %s", item)
+	for _, host := range realtime {
+		if strings.Contains(host, "push2his.eastmoney.com") {
+			t.Fatalf("realtime endpoint should not include push2his host: %v", realtime)
 		}
-		seen[item] = true
 	}
-	if !seen["chrome"] {
-		t.Fatalf("expected fallback candidate chrome, got=%v", got)
+
+	history := fallbackHostsForEndpoint("https://push2his.eastmoney.com/api/qt/stock/kline/get")
+	if len(history) == 0 {
+		t.Fatalf("expected history hosts, got empty")
+	}
+	foundHistoryHost := false
+	for _, host := range history {
+		if strings.Contains(host, "push2his.eastmoney.com") {
+			foundHistoryHost = true
+			break
+		}
+	}
+	if !foundHistoryHost {
+		t.Fatalf("history endpoint should include push2his host: %v", history)
 	}
 }
 
-func TestIsUnsupportedImpersonateError(t *testing.T) {
-	errText := "requests.exceptions.RequestsError: Impersonate chrome999 is not supported"
-	if !isUnsupportedImpersonateError(assertErr(errText)) {
-		t.Fatalf("expected unsupported impersonate to be detected")
+func TestCandidateHostsForEndpoint(t *testing.T) {
+	endpoint := "https://82.push2.eastmoney.com/api/qt/clist/get"
+	hosts := candidateHostsForEndpoint(endpoint)
+	if len(hosts) == 0 {
+		t.Fatalf("expected non-empty candidate hosts")
 	}
-	if isUnsupportedImpersonateError(assertErr("connection closed abruptly")) {
-		t.Fatalf("unexpected unsupported detection for generic transport error")
+	if hosts[0] != "https://82.push2.eastmoney.com" {
+		t.Fatalf("expected original host first, got=%v", hosts)
+	}
+	seen := map[string]struct{}{}
+	for _, host := range hosts {
+		if _, ok := seen[host]; ok {
+			t.Fatalf("unexpected duplicate host list: %v", hosts)
+		}
+		seen[host] = struct{}{}
 	}
 }
 
-type staticErr string
+func TestShouldUseUTLSBackend(t *testing.T) {
+	cases := []struct {
+		endpoint string
+		want     bool
+	}{
+		{endpoint: "https://push2.eastmoney.com/api/qt/clist/get", want: true},
+		{endpoint: "https://push2.eastmoney.com/api/qt/stock/get", want: true},
+		{endpoint: "https://push2his.eastmoney.com/api/qt/stock/kline/get", want: true},
+		{endpoint: "https://push2.eastmoney.com/api/qt/stock/trends2/get", want: false},
+		{endpoint: "https://fundf10.eastmoney.com/F10DataApi.aspx", want: false},
+	}
+	for _, tc := range cases {
+		if got := shouldUseUTLSBackend(tc.endpoint); got != tc.want {
+			t.Fatalf("shouldUseUTLSBackend(%s)=%v want=%v", tc.endpoint, got, tc.want)
+		}
+	}
+}
 
-func (e staticErr) Error() string { return string(e) }
+func TestEastmoneyEndpointLabel(t *testing.T) {
+	got := eastmoneyEndpointLabel("https://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=200")
+	want := "https://push2.eastmoney.com/api/qt/clist/get"
+	if got != want {
+		t.Fatalf("unexpected endpoint label: got=%s want=%s", got, want)
+	}
+}
 
-func assertErr(msg string) error {
-	return staticErr(strings.TrimSpace(msg))
+func TestNormalizeEastMoneyOptions(t *testing.T) {
+	opts := normalizeEastMoneyOptions(EastMoneyOptions{})
+	if opts.Timeout <= 0 {
+		t.Fatalf("expected positive timeout")
+	}
+	if opts.MaxRetries <= 0 {
+		t.Fatalf("expected positive max retries")
+	}
+	if opts.MinInterval <= 0 {
+		t.Fatalf("expected positive min interval")
+	}
+	if strings.TrimSpace(opts.Referer) == "" {
+		t.Fatalf("expected non-empty referer")
+	}
+	if strings.TrimSpace(opts.UserAgent) == "" {
+		t.Fatalf("expected non-empty user agent")
+	}
+	custom := normalizeEastMoneyOptions(EastMoneyOptions{
+		Timeout:     9 * time.Second,
+		MaxRetries:  2,
+		MinInterval: 50 * time.Millisecond,
+		Referer:     "https://quote.eastmoney.com/",
+		UserAgent:   "test-agent",
+	})
+	if custom.Timeout != 9*time.Second || custom.MaxRetries != 2 || custom.MinInterval != 50*time.Millisecond {
+		t.Fatalf("expected custom duration/retry settings to be kept")
+	}
+	if custom.Referer != "https://quote.eastmoney.com/" {
+		t.Fatalf("unexpected referer: %s", custom.Referer)
+	}
+	if custom.UserAgent != "test-agent" {
+		t.Fatalf("unexpected user agent: %s", custom.UserAgent)
+	}
 }
