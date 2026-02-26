@@ -3,12 +3,15 @@ package workflow
 import "genFu/internal/rsshub"
 
 type StockWorkflowInput struct {
-	AccountID           int64    `json:"account_id"`
-	Symbol              string   `json:"symbol"`
-	Name                string   `json:"name"`
-	StockNewsRoutes      []string `json:"stock_news_routes"`
-	IndustryNewsRoutes   []string `json:"industry_news_routes"`
-	NewsLimit            int      `json:"news_limit"`
+	AccountID          int64    `json:"account_id"`
+	Symbol             string   `json:"symbol"`
+	Name               string   `json:"name"`
+	StockNewsRoutes    []string `json:"stock_news_routes"`
+	IndustryNewsRoutes []string `json:"industry_news_routes"`
+	NewsLimit          int      `json:"news_limit"`
+	SessionID          string   `json:"session_id,omitempty"`
+	SessionTitle       string   `json:"session_title,omitempty"`
+	Prompt             string   `json:"prompt,omitempty"`
 }
 
 type HoldingPosition struct {
@@ -42,12 +45,12 @@ type NewsSummaryOutput struct {
 }
 
 type StockWorkflowOutput struct {
-	Holdings         HoldingsOutput   `json:"holdings"`
-	HoldingsMarket   []MarketMove     `json:"holdings_market"`
-	TargetMarket     MarketMove       `json:"target_market"`
-	News             NewsSummaryOutput `json:"news"`
-	BullAnalysis     string           `json:"bull_analysis"`
-	BearAnalysis     string           `json:"bear_analysis"`
-	DebateAnalysis   string           `json:"debate_analysis"`
-	Summary          string           `json:"summary"`
+	Holdings       HoldingsOutput    `json:"holdings"`
+	HoldingsMarket []MarketMove      `json:"holdings_market"`
+	TargetMarket   MarketMove        `json:"target_market"`
+	News           NewsSummaryOutput `json:"news"`
+	BullAnalysis   string            `json:"bull_analysis"`
+	BearAnalysis   string            `json:"bear_analysis"`
+	DebateAnalysis string            `json:"debate_analysis"`
+	Summary        string            `json:"summary"`
 }

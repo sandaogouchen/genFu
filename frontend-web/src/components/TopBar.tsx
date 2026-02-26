@@ -13,7 +13,6 @@ const TITLES: Record<string, string> = {
   "/news": "新闻/资讯",
   "/workflow": "工作流",
   "/docs": "文档/调试",
-  "/reports": "报告库",
   "/stockpicker": "智能选股",
 };
 

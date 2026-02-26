@@ -4,10 +4,13 @@ import "time"
 
 // StockPickRequest 选股请求
 type StockPickRequest struct {
-	AccountID int64     `json:"account_id"`
-	TopN      int       `json:"top_n"`     // 返回股票数量，默认5
-	DateFrom  time.Time `json:"date_from"` // 数据起始日期
-	DateTo    time.Time `json:"date_to"`   // 数据结束日期
+	AccountID    int64     `json:"account_id"`
+	TopN         int       `json:"top_n"`     // 返回股票数量，默认5
+	DateFrom     time.Time `json:"date_from"` // 数据起始日期
+	DateTo       time.Time `json:"date_to"`   // 数据结束日期
+	SessionID    string    `json:"session_id,omitempty"`
+	SessionTitle string    `json:"session_title,omitempty"`
+	Prompt       string    `json:"prompt,omitempty"`
 }
 
 // StockPickResponse 选股响应
@@ -19,7 +22,6 @@ type StockPickResponse struct {
 	NewsSummary   string           `json:"news_summary"`
 	Warnings      []string         `json:"warnings,omitempty"`
 	ScreeningInfo *ScreeningResult `json:"screening_info,omitempty"` // 筛选信息
-	StrategyGuide *StrategyGuide   `json:"strategy_guide,omitempty"` // 策略级买卖行动指南
 }
 
 // StockPick 单只选股结果
@@ -33,6 +35,9 @@ type StockPick struct {
 	TechnicalReasons  TechnicalReason    `json:"technical_reasons"`
 	FinancialAnalysis *FinancialAnalysis `json:"financial_analysis,omitempty"`
 	OperationGuide    *OperationGuide    `json:"operation_guide,omitempty"`
+	TradeGuideText    string             `json:"trade_guide_text"`
+	TradeGuideJSON    string             `json:"trade_guide_json"`
+	TradeGuideVersion string             `json:"trade_guide_version"`
 	RiskLevel         string             `json:"risk_level"` // low/medium/high
 	Allocation        Allocation         `json:"allocation"`
 }
@@ -119,18 +124,9 @@ type Position struct {
 
 // AgentOutput Agent输出结构
 type AgentOutput struct {
-	Stocks        []StockPick    `json:"stocks"`
-	MarketView    string         `json:"market_view"`
-	RiskNotes     string         `json:"risk_notes"`
-	StrategyGuide *StrategyGuide `json:"strategy_guide,omitempty"`
-}
-
-// StrategyGuide 策略级行动指南
-type StrategyGuide struct {
-	StrategyType     string `json:"strategy_type,omitempty"`
-	StrategyName     string `json:"strategy_name,omitempty"`
-	GuideText        string `json:"guide_text"`         // 行动指南文字描述
-	TradeSignalsJSON string `json:"trade_signals_json"` // 严格 JSON 格式的买卖信号字符串
+	Stocks     []StockPick `json:"stocks"`
+	MarketView string      `json:"market_view"`
+	RiskNotes  string      `json:"risk_notes"`
 }
 
 // OperationGuide 操作指南

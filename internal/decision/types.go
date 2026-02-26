@@ -6,9 +6,12 @@ import (
 )
 
 type DecisionRequest struct {
-	AccountID int64             `json:"account_id,omitempty"`
-	ReportIDs []int64           `json:"report_ids,omitempty"`
-	Meta      map[string]string `json:"meta,omitempty"`
+	AccountID    int64             `json:"account_id,omitempty"`
+	ReportIDs    []int64           `json:"report_ids,omitempty"`
+	Meta         map[string]string `json:"meta,omitempty"`
+	SessionID    string            `json:"session_id,omitempty"`
+	SessionTitle string            `json:"session_title,omitempty"`
+	Prompt       string            `json:"prompt,omitempty"`
 }
 
 type DecisionResponse struct {

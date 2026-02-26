@@ -10,11 +10,12 @@ import { postJson } from "@/utils/genfuApi";
 interface SearchItem {
   symbol: string;
   name: string;
-  type: string;
+  type?: string;
+  asset_type?: string;
   price?: number;
 }
 
-interface Position {
+interface SnapshotPosition {
   id: number;
   account_id: number;
   instrument: {
@@ -26,13 +27,47 @@ interface Position {
   quantity: number;
   avg_cost: number;
   market_price: number | null;
+  current_price: number;
+  price_source: "realtime" | "stored" | "avg_cost" | string;
+  cost: number;
+  market_value: number;
+  pnl: number;
+  pnl_pct: number;
+}
+
+interface SnapshotSummary {
+  account_id: number;
+  position_count: number;
+  trade_count: number;
+  total_cost: number;
+  total_value: number;
+  total_pnl: number;
+  pnl_pct: number;
+}
+
+interface SnapshotPriceFailure {
+  symbol: string;
+  name: string;
+  asset_type: string;
+  reason: string;
+}
+
+interface PortfolioSnapshot {
+  positions: SnapshotPosition[];
+  summary: SnapshotSummary;
+  refreshed_at: string;
+  has_stale_prices: boolean;
+  price_failures?: SnapshotPriceFailure[];
 }
 
 type Step = "search" | "input";
 
 export default function Investment() {
-  const [positions, setPositions] = useState<Position[]>([]);
-  const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
+  const [positions, setPositions] = useState<SnapshotPosition[]>([]);
+  const [summary, setSummary] = useState<SnapshotSummary | null>(null);
+  const [refreshedAt, setRefreshedAt] = useState("");
+  const [hasStalePrices, setHasStalePrices] = useState(false);
+  const [priceFailures, setPriceFailures] = useState<SnapshotPriceFailure[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
 
@@ -40,43 +75,46 @@ export default function Investment() {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<Step>("search");
   const [selectedItem, setSelectedItem] = useState<SearchItem | null>(null);
-  const [cost, setCost] = useState("");
-  const [currentValue, setCurrentValue] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [avgCost, setAvgCost] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   // Search state
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
   const [searching, setSearching] = useState(false);
+  const visibleSearchResults = useMemo(() => searchResults.slice(0, 6), [searchResults]);
 
   // OCR state
   const [ocrOpen, setOcrOpen] = useState(false);
   const [imageFile, setImageFile] = useState<File | null>(null);
 
+  const normalizeAssetType = useCallback((item: SearchItem | null | undefined): string => {
+    return item?.asset_type ?? item?.type ?? "unknown";
+  }, []);
+
+  const assetTypeLabel = useCallback((assetType: string): string => {
+    if (assetType === "fund") return "基金";
+    if (assetType === "stock") return "股票";
+    return assetType;
+  }, []);
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const [listResp, summaryResp] = await Promise.all([
-        postJson<{ output?: unknown; error?: string }>("/api/investment", {
-          action: "list_positions",
-          limit: 200,
-          offset: 0,
-        }),
-        postJson<{ output?: unknown; error?: string }>("/api/investment", {
-          action: "get_portfolio_summary",
-        }),
-      ]);
-      if (listResp.error) {
-        setError(listResp.error);
+      const snapshotResp = await postJson<{ output?: PortfolioSnapshot; error?: string }>("/api/investment", {
+        action: "get_portfolio_snapshot",
+      });
+      if (snapshotResp.error) {
+        setError(snapshotResp.error);
       } else {
-        const output = Array.isArray(listResp.output) ? listResp.output : [];
-        setPositions(output as Position[]);
-      }
-      if (summaryResp.error) {
-        setError(summaryResp.error);
-      } else {
-        setSummary((summaryResp.output as Record<string, unknown>) ?? null);
+        const snapshot = snapshotResp.output;
+        setPositions(snapshot?.positions ?? []);
+        setSummary(snapshot?.summary ?? null);
+        setRefreshedAt(snapshot?.refreshed_at ?? "");
+        setHasStalePrices(Boolean(snapshot?.has_stale_prices));
+        setPriceFailures(snapshot?.price_failures ?? []);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "unknown_error";
@@ -135,8 +173,8 @@ export default function Investment() {
   const backToSearch = () => {
     setStep("search");
     setSelectedItem(null);
-    setCost("");
-    setCurrentValue("");
+    setQuantity("");
+    setAvgCost("");
   };
 
   // Delete position
@@ -151,7 +189,7 @@ export default function Investment() {
         toast({ title: "删除失败", description: resp.error });
       } else {
         toast({ title: "删除成功" });
-        loadData();
+        void loadData();
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "unknown_error";
@@ -162,33 +200,44 @@ export default function Investment() {
   // Submit new position
   const handleSubmit = async () => {
     if (!selectedItem) return;
-    if (!cost || !currentValue) {
+    if (!quantity || !avgCost) {
       toast({ title: "请填写完整信息" });
+      return;
+    }
+    const quantityValue = parseFloat(quantity);
+    const avgCostValue = parseFloat(avgCost);
+    if (!Number.isFinite(quantityValue) || !Number.isFinite(avgCostValue) || quantityValue <= 0 || avgCostValue <= 0) {
+      toast({ title: "请输入有效的数量和成本单价" });
       return;
     }
 
     setSubmitting(true);
     try {
-      const resp = await postJson<{ error?: string }>("/api/investment", {
-        action: "add_position_simple",
+      const payload: Record<string, unknown> = {
+        action: "add_position_by_quantity",
         symbol: selectedItem.symbol,
         name: selectedItem.name,
-        asset_type: selectedItem.type,
-        cost: parseFloat(cost),
-        current_value: parseFloat(currentValue),
-        market_price: selectedItem.price || 0,
+        asset_type: normalizeAssetType(selectedItem),
+        quantity: quantityValue,
+        avg_cost: avgCostValue,
+      };
+      if (selectedItem.price && selectedItem.price > 0) {
+        payload.market_price = selectedItem.price;
+      }
+      const resp = await postJson<{ error?: string }>("/api/investment", {
+        ...payload,
       });
       if (resp.error) {
         toast({ title: "添加失败", description: resp.error });
       } else {
         toast({ title: "添加成功" });
         setOpen(false);
-        loadData();
+        void loadData();
         // Reset state
         setStep("search");
         setSelectedItem(null);
-        setCost("");
-        setCurrentValue("");
+        setQuantity("");
+        setAvgCost("");
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : "unknown_error";
@@ -218,37 +267,67 @@ export default function Investment() {
       toast({ title: "识别完成", description: "持仓已更新" });
       setOcrOpen(false);
       setImageFile(null);
-      loadData();
+      void loadData();
     } catch (e) {
       const msg = e instanceof Error ? e.message : "unknown_error";
       toast({ title: "识别失败", description: msg });
     }
   };
 
-  const totalValue = useMemo(() => Number(summary?.total_value ?? 0), [summary]);
-  const totalCost = useMemo(() => Number(summary?.total_cost ?? 0), [summary]);
-  const totalPnL = useMemo(() => Number(summary?.total_pnl ?? 0), [summary]);
-  const pnlRate = useMemo(() => (totalCost > 0 ? totalPnL / totalCost : 0), [totalCost, totalPnL]);
+  const totalValue = useMemo(() => Number(summary?.total_value ?? 0), [summary?.total_value]);
+  const totalCost = useMemo(() => Number(summary?.total_cost ?? 0), [summary?.total_cost]);
+  const totalPnL = useMemo(() => Number(summary?.total_pnl ?? 0), [summary?.total_pnl]);
+  const pnlRate = useMemo(() => Number(summary?.pnl_pct ?? (totalCost > 0 ? totalPnL / totalCost : 0)), [summary?.pnl_pct, totalCost, totalPnL]);
 
-  const currency = (summary?.base_currency as string) || "CNY";
+  const currency = "CNY";
   const money = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 
-  // Calculate estimated quantity and cost price
+  // Calculate estimated snapshot for add-position modal.
   const calculatedInfo = useMemo(() => {
-    if (!cost || !currentValue || !selectedItem?.price) return null;
-    const marketPrice = selectedItem.price;
-    const quantity = parseFloat(currentValue) / marketPrice;
-    const avgCost = quantity > 0 ? parseFloat(cost) / quantity : 0;
-    return { quantity, avgCost, marketPrice };
-  }, [cost, currentValue, selectedItem?.price]);
+    if (!quantity || !avgCost) return null;
+    const quantityValue = parseFloat(quantity);
+    const avgCostValue = parseFloat(avgCost);
+    if (!Number.isFinite(quantityValue) || !Number.isFinite(avgCostValue)) return null;
+    if (quantityValue <= 0 || avgCostValue <= 0) return null;
+    const costValue = quantityValue * avgCostValue;
+    const marketPrice = selectedItem?.price;
+    if (!marketPrice || marketPrice <= 0) {
+      return {
+        quantity: quantityValue,
+        avgCost: avgCostValue,
+        cost: costValue,
+        marketPrice: null,
+        marketValue: null,
+        pnl: null,
+      };
+    }
+    const marketValue = quantityValue * marketPrice;
+    return {
+      quantity: quantityValue,
+      avgCost: avgCostValue,
+      cost: costValue,
+      marketPrice,
+      marketValue,
+      pnl: marketValue - costValue,
+    };
+  }, [avgCost, quantity, selectedItem?.price]);
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="text-lg font-semibold text-foreground">投资管理</div>
+        <Button variant="secondary" onClick={() => void loadData()} disabled={loading}>
+          {loading ? "刷新中..." : "手动刷新"}
+        </Button>
       </div>
 
       <div className="rounded-2xl border border-border bg-card p-4">
+        <div className="mb-3 flex items-center justify-between text-xs text-muted-foreground">
+          <div>
+            {refreshedAt ? `最近刷新：${new Date(refreshedAt).toLocaleString()}` : "最近刷新：--"}
+          </div>
+          {hasStalePrices ? <div>部分标的使用了回退价格</div> : null}
+        </div>
         {loading ? (
           <div className="space-y-3">
             <Skeleton className="h-6 w-40" />
@@ -321,23 +400,26 @@ export default function Investment() {
                       </thead>
                       <tbody>
                         {positions.map((p) => {
-                          const currentPrice = p.market_price ?? p.avg_cost;
-                          const costVal = p.quantity * p.avg_cost;
-                          const valueVal = p.quantity * currentPrice;
-                          const pnl = valueVal - costVal;
-                          const pnlPct = costVal > 0 ? (pnl / costVal) * 100 : 0;
+                          const currentPrice = Number(p.current_price);
+                          const costVal = Number(p.cost);
+                          const valueVal = Number(p.market_value);
+                          const pnl = Number(p.pnl);
+                          const pnlPct = Number(p.pnl_pct) * 100;
                           return (
                             <tr key={p.id} className="border-t border-border">
                               <td className="py-2 pr-3">
                                 <div className="font-medium text-foreground">{p.instrument.name}</div>
                                 <div className="text-xs text-muted-foreground">
-                                  {p.instrument.asset_type === "fund" ? "基金" : p.instrument.asset_type === "stock" ? "股票" : p.instrument.asset_type}
+                                  {assetTypeLabel(p.instrument.asset_type)}
                                 </div>
                               </td>
                               <td className="py-2 pr-3 font-mono text-xs text-muted-foreground">{p.instrument.symbol}</td>
                               <td className="py-2 pr-3 text-right text-foreground">{p.quantity.toFixed(2)}</td>
                               <td className="py-2 pr-3 text-right text-foreground">{money(p.avg_cost)}</td>
-                              <td className="py-2 pr-3 text-right text-foreground">{money(currentPrice)}</td>
+                              <td className="py-2 pr-3 text-right text-foreground">
+                                <div>{money(currentPrice)}</div>
+                                <div className="text-xs text-muted-foreground">{p.price_source}</div>
+                              </td>
                               <td className="py-2 pr-3 text-right text-foreground">{money(costVal)}</td>
                               <td className="py-2 pr-3 text-right font-medium text-foreground">{money(valueVal)}</td>
                               <td className={`py-2 pr-3 text-right ${pnl >= 0 ? "text-emerald-500" : "text-destructive"}`}>
@@ -363,6 +445,11 @@ export default function Investment() {
             </Card>
           </div>
         )}
+        {hasStalePrices ? (
+          <div className="mt-3 rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning">
+            部分标的未取到实时价，已回退缓存/成本价{priceFailures.length > 0 ? `（${priceFailures.length} 个）` : ""}。
+          </div>
+        ) : null}
         {error ? <div className="mt-3 text-sm text-destructive">{error}</div> : null}
       </div>
 
@@ -376,8 +463,8 @@ export default function Investment() {
             setSearchQuery("");
             setSearchResults([]);
             setSelectedItem(null);
-            setCost("");
-            setCurrentValue("");
+            setQuantity("");
+            setAvgCost("");
             setOpen(true);
           }}
         >
@@ -390,13 +477,13 @@ export default function Investment() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
           <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-xl">
             <div className="text-sm font-semibold text-foreground">
-              {step === "search" ? "搜索基金/股票" : "添加持仓"}
+              {step === "search" ? "搜索基金" : "添加持仓"}
             </div>
 
             {step === "search" ? (
               <div className="mt-3 space-y-3">
                 <Input
-                  placeholder="输入代码或名称搜索..."
+                  placeholder="输入基金代码或名称搜索..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   autoFocus
@@ -404,29 +491,38 @@ export default function Investment() {
                 {searching && (
                   <div className="text-xs text-muted-foreground">搜索中...</div>
                 )}
-                {searchResults.length > 0 && (
-                  <div className="max-h-64 space-y-1 overflow-auto rounded-lg border border-border">
-                    {searchResults.map((item) => (
-                      <button
-                        key={item.symbol}
-                        type="button"
-                        className="w-full px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground transition-colors"
-                        onClick={() => selectItem(item)}
-                      >
-                        <span className="font-mono text-xs text-muted-foreground">{item.symbol}</span>
-                        <span className="ml-2 font-medium text-foreground">{item.name}</span>
-                        <span className="ml-2 text-xs text-muted-foreground">
-                          {item.type === "fund" ? "基金" : item.type === "stock" ? "股票" : item.type}
-                        </span>
-                        {item.price && (
-                          <span className="ml-2 text-xs text-muted-foreground">￥{item.price.toFixed(2)}</span>
-                        )}
-                      </button>
-                    ))}
+                {visibleSearchResults.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="grid max-h-72 grid-cols-1 gap-2 overflow-auto">
+                      {visibleSearchResults.map((item) => (
+                        <button
+                          key={`${item.symbol}-${item.name}`}
+                          type="button"
+                          className="w-full rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:border-accent hover:bg-accent/30"
+                          onClick={() => selectItem(item)}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="font-medium text-foreground">{item.name}</div>
+                            <div className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                              {assetTypeLabel(normalizeAssetType(item))}
+                            </div>
+                          </div>
+                          <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                            <span className="font-mono">{item.symbol}</span>
+                            {item.price && item.price > 0 ? <span>￥{item.price.toFixed(2)}</span> : null}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                    {searchResults.length > visibleSearchResults.length ? (
+                      <div className="text-xs text-muted-foreground">
+                        结果较多，仅展示前 {visibleSearchResults.length} 条
+                      </div>
+                    ) : null}
                   </div>
                 )}
                 {searchQuery && !searching && searchResults.length === 0 && (
-                  <div className="text-sm text-muted-foreground">未找到结果</div>
+                  <div className="text-sm text-muted-foreground">未找到匹配基金</div>
                 )}
               </div>
             ) : (
@@ -435,42 +531,49 @@ export default function Investment() {
                   <div className="text-xs text-muted-foreground">已选择</div>
                   <div className="font-medium text-foreground">{selectedItem?.name}</div>
                   <div className="text-xs text-muted-foreground">
-                    {selectedItem?.symbol} · {selectedItem?.type === "fund" ? "基金" : selectedItem?.type === "stock" ? "股票" : selectedItem?.type}
+                    {selectedItem?.symbol} · {assetTypeLabel(normalizeAssetType(selectedItem))}
                     {selectedItem?.price && ` · 当前价: ￥${selectedItem.price.toFixed(2)}`}
                   </div>
                 </div>
                 <Input
-                  placeholder="购入总成本（元）"
+                  placeholder="持有数量（份）"
                   type="number"
-                  value={cost}
-                  onChange={(e) => setCost(e.target.value)}
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
                   autoFocus
                 />
                 <Input
-                  placeholder="当前总金额/市值（元）"
+                  placeholder="成本单价（元/份）"
                   type="number"
-                  value={currentValue}
-                  onChange={(e) => setCurrentValue(e.target.value)}
+                  value={avgCost}
+                  onChange={(e) => setAvgCost(e.target.value)}
                 />
 
                 {/* Show calculated info */}
                 {calculatedInfo && (
                   <div className="rounded-lg bg-accent/10 px-3 py-2 text-sm">
-                    <div className="text-xs text-accent mb-1">持仓信息计算</div>
+                    <div className="mb-1 text-xs text-accent">持仓信息预估</div>
                     <div className="grid grid-cols-2 gap-2 text-muted-foreground">
                       <div>持有数量: <span className="font-medium text-foreground">{calculatedInfo.quantity.toFixed(2)}份</span></div>
-                      <div>成本价: <span className="font-medium text-foreground">￥{calculatedInfo.avgCost.toFixed(4)}</span></div>
-                      <div>当前价: <span className="font-medium text-foreground">￥{calculatedInfo.marketPrice.toFixed(2)}</span></div>
-                      <div>盈亏: <span className={parseFloat(currentValue) >= parseFloat(cost) ? "text-emerald-500" : "text-destructive"}>
-                        {money(parseFloat(currentValue) - parseFloat(cost))}元
-                      </span></div>
+                      <div>成本单价: <span className="font-medium text-foreground">￥{calculatedInfo.avgCost.toFixed(4)}</span></div>
+                      <div>总成本: <span className="font-medium text-foreground">￥{money(calculatedInfo.cost)}</span></div>
+                      <div>
+                        当前市值:
+                        <span className="font-medium text-foreground">
+                          {calculatedInfo.marketValue !== null ? ` ￥${money(calculatedInfo.marketValue)}` : " --"}
+                        </span>
+                      </div>
+                      <div>
+                        预估盈亏:
+                        {calculatedInfo.pnl === null ? (
+                          <span className="font-medium text-foreground"> --</span>
+                        ) : (
+                          <span className={calculatedInfo.pnl >= 0 ? "text-emerald-500" : "text-destructive"}>
+                            {" "}{calculatedInfo.pnl >= 0 ? "+" : ""}{money(calculatedInfo.pnl)}元
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                )}
-
-                {!selectedItem?.price && cost && currentValue && (
-                  <div className="rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning">
-                    未获取到实时价格，数量将设为1，成本价=购入成本，当前价=当前金额
                   </div>
                 )}
               </div>
@@ -487,7 +590,7 @@ export default function Investment() {
                 取消
               </Button>
               {step === "input" && (
-                <Button onClick={handleSubmit} disabled={submitting || !cost || !currentValue}>
+                <Button onClick={handleSubmit} disabled={submitting || !quantity || !avgCost}>
                   {submitting ? "添加中..." : "确认添加"}
                 </Button>
               )}

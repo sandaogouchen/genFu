@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import AssistantCard from "@/components/conversation/AssistantCard";
 import CollapsibleSection from "@/components/conversation/CollapsibleSection";
@@ -9,8 +9,19 @@ import type { PromptTemplate } from "@/components/conversation/TemplateChips";
 import TipCard from "@/components/conversation/TipCard";
 import UserBubble from "@/components/conversation/UserBubble";
 import { toast } from "@/hooks/useToast";
-import type { HoldingsOutput, MarketMove, NewsSummaryOutput } from "@/utils/genfuApi";
-import { postSSE } from "@/utils/genfuApi";
+import { usePageSessionStore } from "@/stores/pageSessionStore";
+import type {
+  ConversationRun,
+  HoldingsOutput,
+  MarketMove,
+  NewsSummaryOutput,
+  StockWorkflowOutput,
+} from "@/utils/genfuApi";
+import {
+  createConversationSession,
+  listConversationRuns,
+  postSSE,
+} from "@/utils/genfuApi";
 
 type WorkflowDraft = { symbol: string; news_limit?: number };
 type WorkflowRun = {
@@ -54,11 +65,96 @@ function parseWorkflowPrompt(prompt: string): WorkflowDraft {
   return { symbol, news_limit: Number.isFinite(news_limit ?? NaN) ? news_limit : undefined };
 }
 
+function getRecord(v: unknown): Record<string, unknown> {
+  if (!v || typeof v !== "object") return {};
+  return v as Record<string, unknown>;
+}
+
+function toWorkflowRun(run: ConversationRun): WorkflowRun {
+  const reqObj = getRecord(run.request);
+  const result = getRecord(run.result) as unknown as Partial<StockWorkflowOutput>;
+  return {
+    id: String(run.id),
+    prompt: run.prompt || "工作流请求",
+    req: {
+      symbol: String(reqObj.symbol ?? ""),
+      news_limit: typeof reqObj.news_limit === "number" ? reqObj.news_limit : undefined,
+    },
+    error: run.error,
+    holdings: result.holdings,
+    holdings_market: result.holdings_market,
+    target_market: result.target_market,
+    news: result.news,
+    bull: result.bull_analysis,
+    bear: result.bear_analysis,
+    debate: result.debate_analysis,
+    summary: result.summary,
+  };
+}
+
 export default function Workflow() {
   const abortRef = useRef<AbortController | null>(null);
+  const activeByScene = usePageSessionStore((s) => s.activeByScene);
+  const setActive = usePageSessionStore((s) => s.setActive);
+  const sessionId = activeByScene.workflow ?? "";
+
   const [input, setInput] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
+
+  const loadRuns = useCallback(async (sid: string) => {
+    if (!sid) {
+      setRuns([]);
+      return;
+    }
+    try {
+      const data = await listConversationRuns(sid, 100);
+      setRuns((data.items ?? []).map(toWorkflowRun));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "加载失败";
+      toast({ title: "加载会话失败", description: msg, durationMs: 4200 });
+      setRuns([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (sessionId) return;
+    let canceled = false;
+    (async () => {
+      try {
+        const created = await createConversationSession({ scene: "workflow", title: "工作流日志 1" });
+        if (!canceled) {
+          setActive("workflow", created.id);
+          window.dispatchEvent(new Event("genfu:conversation-updated"));
+        }
+      } catch (err) {
+        if (!canceled) {
+          const msg = err instanceof Error ? err.message : "创建会话失败";
+          toast({ title: "创建会话失败", description: msg, durationMs: 4200 });
+        }
+      }
+    })();
+    return () => {
+      canceled = true;
+    };
+  }, [sessionId, setActive]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    void loadRuns(sessionId);
+  }, [sessionId, loadRuns]);
+
+  useEffect(() => {
+    const handler = () => {
+      if (sessionId) {
+        void loadRuns(sessionId);
+      }
+    };
+    window.addEventListener("genfu:conversation-updated", handler);
+    return () => {
+      window.removeEventListener("genfu:conversation-updated", handler);
+    };
+  }, [sessionId, loadRuns]);
 
   const templates = useMemo<PromptTemplate[]>(
     () => [
@@ -140,6 +236,10 @@ export default function Workflow() {
         templates={templates}
         onSubmit={async () => {
           if (!canSubmit) return;
+          if (!sessionId) {
+            toast({ title: "请稍候", description: "会话初始化中" });
+            return;
+          }
           const prompt = input.trim();
           setInput("");
 
@@ -152,48 +252,61 @@ export default function Workflow() {
             return;
           }
 
-          const id = `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-          setRuns((xs) => [...xs, { id, prompt, req }]);
+          const tempId = `temp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+          setRuns((xs) => [...xs, { id: tempId, prompt, req }]);
 
           abortRef.current?.abort();
           const ac = new AbortController();
           abortRef.current = ac;
           setLoading(true);
           try {
-            for await (const msg of postSSE("/sse/workflow/stock", req, { signal: ac.signal })) {
+            for await (const msg of postSSE(
+              "/sse/workflow/stock",
+              {
+                ...req,
+                session_id: sessionId,
+                session_title: prompt.slice(0, 20),
+                prompt,
+              },
+              { signal: ac.signal }
+            )) {
               if (msg.event === "holdings") {
                 const payload = JSON.parse(msg.data) as HoldingsOutput;
-                setRuns((xs) => xs.map((x) => (x.id === id ? { ...x, holdings: payload } : x)));
+                setRuns((xs) => xs.map((x) => (x.id === tempId ? { ...x, holdings: payload } : x)));
               } else if (msg.event === "holdings_market") {
                 const payload = JSON.parse(msg.data) as MarketMove[];
-                setRuns((xs) => xs.map((x) => (x.id === id ? { ...x, holdings_market: payload } : x)));
+                setRuns((xs) => xs.map((x) => (x.id === tempId ? { ...x, holdings_market: payload } : x)));
               } else if (msg.event === "target_market") {
                 const payload = JSON.parse(msg.data) as MarketMove;
-                setRuns((xs) => xs.map((x) => (x.id === id ? { ...x, target_market: payload } : x)));
+                setRuns((xs) => xs.map((x) => (x.id === tempId ? { ...x, target_market: payload } : x)));
               } else if (msg.event === "news_summary") {
                 const payload = JSON.parse(msg.data) as NewsSummaryOutput;
-                setRuns((xs) => xs.map((x) => (x.id === id ? { ...x, news: payload } : x)));
+                setRuns((xs) => xs.map((x) => (x.id === tempId ? { ...x, news: payload } : x)));
               } else if (msg.event === "bull") {
                 const payload = JSON.parse(msg.data) as { content?: string };
-                setRuns((xs) => xs.map((x) => (x.id === id ? { ...x, bull: payload.content ?? "" } : x)));
+                setRuns((xs) => xs.map((x) => (x.id === tempId ? { ...x, bull: payload.content ?? "" } : x)));
               } else if (msg.event === "bear") {
                 const payload = JSON.parse(msg.data) as { content?: string };
-                setRuns((xs) => xs.map((x) => (x.id === id ? { ...x, bear: payload.content ?? "" } : x)));
+                setRuns((xs) => xs.map((x) => (x.id === tempId ? { ...x, bear: payload.content ?? "" } : x)));
               } else if (msg.event === "debate") {
                 const payload = JSON.parse(msg.data) as { content?: string };
-                setRuns((xs) => xs.map((x) => (x.id === id ? { ...x, debate: payload.content ?? "" } : x)));
+                setRuns((xs) => xs.map((x) => (x.id === tempId ? { ...x, debate: payload.content ?? "" } : x)));
               } else if (msg.event === "summary") {
                 const payload = JSON.parse(msg.data) as { content?: string };
-                setRuns((xs) => xs.map((x) => (x.id === id ? { ...x, summary: payload.content ?? "" } : x)));
+                setRuns((xs) => xs.map((x) => (x.id === tempId ? { ...x, summary: payload.content ?? "" } : x)));
               } else if (msg.event === "error") {
                 const payload = JSON.parse(msg.data) as { error?: string };
                 throw new Error(payload.error ?? "error");
               }
             }
+            await loadRuns(sessionId);
+            window.dispatchEvent(new Event("genfu:conversation-updated"));
             toast({ title: "工作流完成", description: "已输出各阶段结果" });
           } catch (e) {
             const err = e instanceof Error ? e.message : "unknown_error";
-            setRuns((xs) => xs.map((x) => (x.id === id ? { ...x, error: err } : x)));
+            setRuns((xs) => xs.map((x) => (x.id === tempId ? { ...x, error: err } : x)));
+            await loadRuns(sessionId);
+            window.dispatchEvent(new Event("genfu:conversation-updated"));
             toast({ title: "工作流失败", description: err, durationMs: 5200 });
           } finally {
             setLoading(false);

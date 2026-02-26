@@ -2,15 +2,19 @@ package stockpicker
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"genFu/internal/conversationlog"
 )
 
 // Handler HTTP处理器
 type Handler struct {
-	service   *Service
-	guideRepo *GuideRepository
+	service          *Service
+	guideRepo        *GuideRepository
+	conversationRepo *conversationlog.Repository
 }
 
 // NewHandler 创建处理器
@@ -19,6 +23,10 @@ func NewHandler(service *Service, guideRepo *GuideRepository) *Handler {
 		service:   service,
 		guideRepo: guideRepo,
 	}
+}
+
+func (h *Handler) SetConversationRepo(repo *conversationlog.Repository) {
+	h.conversationRepo = repo
 }
 
 // ServeHTTP 处理HTTP请求
@@ -33,11 +41,32 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	sessionID := ""
+	if h.conversationRepo != nil {
+		title := conversationlog.BuildSessionTitle(req.SessionTitle, req.Prompt, "智能选股会话")
+		session, err := h.conversationRepo.EnsureSession(r.Context(), req.SessionID, conversationlog.SceneStockPicker, title, "default")
+		if err != nil {
+			log.Printf("conversation ensure failed: %v", err)
+		} else {
+			sessionID = session.ID
+		}
+	}
 
 	resp, err := h.service.PickStocks(r.Context(), req)
 	if err != nil {
+		if h.conversationRepo != nil && sessionID != "" {
+			reqRaw, _ := json.Marshal(req)
+			_ = h.conversationRepo.AppendRun(r.Context(), sessionID, req.Prompt, reqRaw, nil, err.Error())
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if h.conversationRepo != nil && sessionID != "" {
+		reqRaw, _ := json.Marshal(req)
+		respRaw, _ := json.Marshal(resp)
+		if err := h.conversationRepo.AppendRun(r.Context(), sessionID, req.Prompt, reqRaw, respRaw, ""); err != nil {
+			log.Printf("conversation append failed: %v", err)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

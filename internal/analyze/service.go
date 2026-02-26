@@ -75,34 +75,13 @@ func (a *Analyzer) Analyze(ctx context.Context, req AnalyzeRequest) (AnalyzeResp
 	if err != nil {
 		return AnalyzeResponse{}, err
 	}
-	response := AnalyzeResponse{
+	return AnalyzeResponse{
 		Type:    req.Type,
 		Symbol:  req.Symbol,
 		Name:    req.Name,
 		Steps:   steps,
 		Summary: summary,
-	}
-	if a.repo != nil {
-		report, err := a.repo.CreateReport(ctx, req, response)
-		if err != nil {
-			return AnalyzeResponse{}, err
-		}
-		response.ReportID = report.ID
-
-		// Generate title asynchronously
-		if a.titleGenerator != nil && strings.TrimSpace(summary) != "" {
-			go func() {
-				// Use background context for async operation
-				bgCtx := context.Background()
-				if err := a.titleGenerator.GenerateAndSave(bgCtx, report.ID, summary); err != nil {
-					// Log error but don't fail the request
-					// In production, you might want to use proper logging
-					_ = err
-				}
-			}()
-		}
-	}
-	return response, nil
+	}, nil
 }
 
 func (a *Analyzer) AnalyzeSteps(ctx context.Context, req AnalyzeRequest, onStep func(AnalyzeStep) error) ([]AnalyzeStep, string, error) {

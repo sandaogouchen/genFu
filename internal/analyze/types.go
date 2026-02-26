@@ -3,12 +3,15 @@ package analyze
 import "genFu/internal/tool"
 
 type AnalyzeRequest struct {
-	Symbol  string            `json:"symbol"`
-	Name    string            `json:"name,omitempty"`
-	Type    string            `json:"type"`
-	Kline   string            `json:"kline,omitempty"`
-	Manager string            `json:"manager,omitempty"`
-	Meta    map[string]string `json:"meta,omitempty"`
+	Symbol       string            `json:"symbol"`
+	Name         string            `json:"name,omitempty"`
+	Type         string            `json:"type"`
+	Kline        string            `json:"kline,omitempty"`
+	Manager      string            `json:"manager,omitempty"`
+	Meta         map[string]string `json:"meta,omitempty"`
+	SessionID    string            `json:"session_id,omitempty"`
+	SessionTitle string            `json:"session_title,omitempty"`
+	Prompt       string            `json:"prompt,omitempty"`
 }
 
 type AnalyzeStep struct {

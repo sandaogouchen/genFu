@@ -433,7 +433,7 @@
       },
       "InvestmentRequest": {
         "type": "object",
-        "description": "action supports create_user, create_account, upsert_instrument, set_position, get_position, delete_position, list_positions, list_fund_holdings, record_trade, record_cash_flow, record_valuation, get_portfolio_summary, analyze_pnl, list_trades",
+        "description": "action supports create_user, create_account, upsert_instrument, set_position, get_position, delete_position, list_positions, list_fund_holdings, record_trade, record_cash_flow, record_valuation, get_portfolio_summary, get_portfolio_snapshot, analyze_pnl, list_trades, add_position_by_quantity",
         "properties": {
           "action": { "type": "string" },
           "user_id": { "type": "integer", "format": "int64" },

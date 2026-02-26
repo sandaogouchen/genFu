@@ -8,8 +8,6 @@ import Home from "@/pages/Home";
 import Investment from "@/pages/Investment";
 import Market from "@/pages/Market";
 import News from "@/pages/News";
-import ReportDetail from "@/pages/ReportDetail";
-import Reports from "@/pages/Reports";
 import StockPicker from "@/pages/StockPicker";
 import Workflow from "@/pages/Workflow";
 
@@ -20,8 +18,6 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/analyze" element={<Analyze />} />
-          <Route path="/reports" element={<Reports />} />
-          <Route path="/reports/:id" element={<ReportDetail />} />
           <Route path="/decision" element={<Decision />} />
           <Route path="/chat" element={<Chat />} />
           <Route path="/investment" element={<Investment />} />

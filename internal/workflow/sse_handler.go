@@ -5,21 +5,20 @@ import (
 	"log"
 	"net/http"
 
-	"genFu/internal/analyze"
+	"genFu/internal/conversationlog"
 )
 
 type StockSSEHandler struct {
 	service *StockWorkflow
-	repo    *analyze.Repository
+	logRepo *conversationlog.Repository
 }
 
 func NewStockSSEHandler(service *StockWorkflow) *StockSSEHandler {
 	return &StockSSEHandler{service: service}
 }
 
-// SetAnalyzeRepo sets the analyze repository for report storage
-func (h *StockSSEHandler) SetAnalyzeRepo(repo *analyze.Repository) {
-	h.repo = repo
+func (h *StockSSEHandler) SetConversationRepo(repo *conversationlog.Repository) {
+	h.logRepo = repo
 }
 
 func (h *StockSSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -37,11 +36,25 @@ func (h *StockSSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid_request", http.StatusBadRequest)
 		return
 	}
+	sessionID := ""
+	if h.logRepo != nil {
+		title := conversationlog.BuildSessionTitle(req.SessionTitle, req.Prompt, "工作流会话")
+		session, err := h.logRepo.EnsureSession(r.Context(), req.SessionID, conversationlog.SceneWorkflow, title, "default")
+		if err != nil {
+			log.Printf("conversation ensure failed: %v", err)
+		} else {
+			sessionID = session.ID
+		}
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	resp, err := h.service.Run(r.Context(), req)
 	if err != nil {
+		if h.logRepo != nil && sessionID != "" {
+			reqRaw, _ := json.Marshal(req)
+			_ = h.logRepo.AppendRun(r.Context(), sessionID, req.Prompt, reqRaw, nil, err.Error())
+		}
 		writeSSE(w, flusher, "error", map[string]string{"error": err.Error()})
 		return
 	}
@@ -54,61 +67,11 @@ func (h *StockSSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeSSE(w, flusher, "debate", map[string]string{"content": resp.DebateAnalysis})
 	writeSSE(w, flusher, "summary", map[string]string{"content": resp.Summary})
 	writeSSE(w, flusher, "complete", map[string]bool{"done": true})
-
-	// Save workflow report to database
-	if h.repo != nil && resp.Summary != "" {
-		// Build summary from workflow outputs
-		summaryBytes, _ := json.Marshal(map[string]interface{}{
-			"holdings":        resp.Holdings,
-			"holdings_market": resp.HoldingsMarket,
-			"target_market":   resp.TargetMarket,
-			"news":            resp.News,
-			"bull_analysis":   resp.BullAnalysis,
-			"bear_analysis":   resp.BearAnalysis,
-			"debate_analysis": resp.DebateAnalysis,
-			"summary":         resp.Summary,
-		})
-		summary := string(summaryBytes)
-
-		// Determine symbol from request or target market
-		symbol := req.Symbol
-		name := req.Name
-		if symbol == "" && resp.TargetMarket.Symbol != "" {
-			symbol = resp.TargetMarket.Symbol
-			if resp.TargetMarket.Name != "" {
-				name = resp.TargetMarket.Name
-			}
-		}
-		if symbol == "" {
-			symbol = "portfolio"
-			name = "股票工作流报告"
-		}
-
-		// Create report
-		reportReq := analyze.AnalyzeRequest{
-			Type:   "workflow",
-			Symbol: symbol,
-			Name:   name,
-		}
-		reportResp := analyze.AnalyzeResponse{
-			Type:    "workflow",
-			Symbol:  symbol,
-			Name:    name,
-			Summary: summary,
-		}
-
-		report, repoErr := h.repo.CreateReport(r.Context(), reportReq, reportResp)
-		if repoErr != nil {
-			log.Printf("failed to save workflow report: %v", repoErr)
-		} else {
-			log.Printf("workflow report saved with ID: %d", report.ID)
-
-			// Generate title asynchronously
-			go func(reportID int64, summaryText string) {
-				// For workflow, we'll skip title generation for now
-				// In a production system, you'd want to inject an agent here
-				log.Printf("workflow report %d created (title generation skipped)", reportID)
-			}(report.ID, resp.Summary)
+	if h.logRepo != nil && sessionID != "" {
+		reqRaw, _ := json.Marshal(req)
+		respRaw, _ := json.Marshal(resp)
+		if err := h.logRepo.AppendRun(r.Context(), sessionID, req.Prompt, reqRaw, respRaw, ""); err != nil {
+			log.Printf("conversation append failed: %v", err)
 		}
 	}
 }

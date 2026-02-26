@@ -9,6 +9,7 @@ import (
 	"genFu/internal/analyze"
 	"genFu/internal/api"
 	"genFu/internal/chat"
+	"genFu/internal/conversationlog"
 	"genFu/internal/decision"
 	"genFu/internal/news"
 	"genFu/internal/router"
@@ -30,10 +31,24 @@ type Server struct {
 	ocr              http.Handler
 	newsPipeline     *news.Pipeline
 	newsRepo         *news.Repository
+	conversationLogs *conversationlog.Repository
 }
 
-func NewServer(r *router.Router, registry *tool.Registry, analyzer *analyze.Analyzer, decisionSvc *decision.Service, stockpickerSvc *stockpicker.Service, stockpickerGuide *stockpicker.GuideRepository, chatSvc *chat.Service, stockWF *workflow.StockWorkflow, ocr http.Handler, newsPipeline *news.Pipeline, newsRepo *news.Repository) *Server {
-	return &Server{router: r, registry: registry, analyzer: analyzer, decision: decisionSvc, stockpicker: stockpickerSvc, stockpickerGuide: stockpickerGuide, chat: chatSvc, stockWF: stockWF, ocr: ocr, newsPipeline: newsPipeline, newsRepo: newsRepo}
+func NewServer(r *router.Router, registry *tool.Registry, analyzer *analyze.Analyzer, decisionSvc *decision.Service, stockpickerSvc *stockpicker.Service, stockpickerGuide *stockpicker.GuideRepository, chatSvc *chat.Service, stockWF *workflow.StockWorkflow, ocr http.Handler, newsPipeline *news.Pipeline, newsRepo *news.Repository, conversationLogs *conversationlog.Repository) *Server {
+	return &Server{
+		router:           r,
+		registry:         registry,
+		analyzer:         analyzer,
+		decision:         decisionSvc,
+		stockpicker:      stockpickerSvc,
+		stockpickerGuide: stockpickerGuide,
+		chat:             chatSvc,
+		stockWF:          stockWF,
+		ocr:              ocr,
+		newsPipeline:     newsPipeline,
+		newsRepo:         newsRepo,
+		conversationLogs: conversationLogs,
+	}
 }
 
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
@@ -44,11 +59,11 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	}
 	if s.analyzer != nil {
 		mux.Handle("/api/analyze", analyze.NewHandler(s.analyzer))
-		mux.Handle("/sse/analyze", analyze.NewSSEHandler(s.analyzer))
-		if repo := s.analyzer.GetRepo(); repo != nil {
-			mux.Handle("/api/reports", analyze.NewListHandler(repo))
-			mux.Handle("/api/reports/", analyze.NewDetailHandler(repo))
+		analyzeSSEHandler := analyze.NewSSEHandler(s.analyzer)
+		if s.conversationLogs != nil {
+			analyzeSSEHandler.SetConversationRepo(s.conversationLogs)
 		}
+		mux.Handle("/sse/analyze", analyzeSSEHandler)
 	}
 	if s.registry != nil {
 		mux.Handle("/api/investment", api.NewInvestmentHandler(s.registry))
@@ -59,10 +74,17 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	}
 	if s.decision != nil {
 		mux.Handle("/api/decision", decision.NewHandler(s.decision))
-		mux.Handle("/sse/decision", decision.NewSSEHandler(s.decision))
+		decisionSSEHandler := decision.NewSSEHandler(s.decision)
+		if s.conversationLogs != nil {
+			decisionSSEHandler.SetConversationRepo(s.conversationLogs)
+		}
+		mux.Handle("/sse/decision", decisionSSEHandler)
 	}
 	if s.stockpicker != nil {
 		stockpickerHandler := stockpicker.NewHandler(s.stockpicker, s.stockpickerGuide)
+		if s.conversationLogs != nil {
+			stockpickerHandler.SetConversationRepo(s.conversationLogs)
+		}
 		mux.Handle("/api/stockpicker", stockpickerHandler)
 		// Operation guide APIs
 		mux.HandleFunc("/api/operation-guide", stockpickerHandler.GetOperationGuide)
@@ -78,12 +100,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	if s.chat != nil {
 		chatHandler := chat.NewHandler(s.chat)
 		sseChatHandler := chat.NewSSEHandler(s.chat)
-		// Inject analyze repository if available
-		if s.analyzer != nil {
-			if repo := s.analyzer.GetRepo(); repo != nil {
-				sseChatHandler.SetAnalyzeRepo(repo)
-			}
-		}
 		mux.Handle("/api/chat", chatHandler)
 		mux.Handle("/sse/chat", sseChatHandler)
 		mux.Handle("/ws/chat", chat.NewWSHandler(s.chat))
@@ -92,14 +108,16 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	if s.stockWF != nil {
 		stockHandler := workflow.NewStockHandler(s.stockWF)
 		stockSSEHandler := workflow.NewStockSSEHandler(s.stockWF)
-		// Inject analyze repository if available
-		if s.analyzer != nil {
-			if repo := s.analyzer.GetRepo(); repo != nil {
-				stockSSEHandler.SetAnalyzeRepo(repo)
-			}
+		if s.conversationLogs != nil {
+			stockSSEHandler.SetConversationRepo(s.conversationLogs)
 		}
 		mux.Handle("/api/workflow/stock", stockHandler)
 		mux.Handle("/sse/workflow/stock", stockSSEHandler)
+	}
+	if s.conversationLogs != nil {
+		mux.Handle("/api/conversations/sessions", conversationlog.NewSessionsHandler(s.conversationLogs))
+		mux.Handle("/api/conversations/sessions/", conversationlog.NewSessionItemHandler(s.conversationLogs))
+		mux.Handle("/api/conversations/runs", conversationlog.NewRunsHandler(s.conversationLogs))
 	}
 	// News events API
 	if s.newsPipeline != nil {

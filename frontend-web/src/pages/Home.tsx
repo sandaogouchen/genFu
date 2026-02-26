@@ -191,7 +191,7 @@ export default function Home() {
 
   // Mock data for dashboard
   const stats = {
-    reports: 128,
+    reports: 0,
     signals: 47,
     sessions: 23,
   };
@@ -231,7 +231,7 @@ export default function Home() {
 
       {/* Stats Row */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <StatCard label="分析报告" value={stats.reports} icon={FileText} />
+        <StatCard label="页面会话" value={stats.reports} icon={FileText} />
         <StatCard label="交易信号" value={stats.signals} icon={Target} />
         <StatCard label="会话记录" value={stats.sessions} icon={MessageSquare} />
         <StatCard
@@ -278,10 +278,10 @@ export default function Home() {
         <CardHeader className="flex flex-row items-center justify-between border-b border-border/50 px-5 py-4">
           <CardTitle className="text-base">最近活动</CardTitle>
           <Link
-            to="/reports"
+            to="/analyze"
             className="inline-flex items-center gap-1 text-sm text-accent hover:text-accent/80 transition-colors"
           >
-            查看全部
+            进入分析
             <ArrowRight className="h-4 w-4" />
           </Link>
         </CardHeader>
@@ -297,11 +297,11 @@ export default function Home() {
       {/* Feature Grid */}
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <Link
-          to="/reports"
+          to="/analyze"
           className="flex flex-col items-center gap-2 rounded-xl border border-border/50 bg-card p-4 text-center transition-all hover:border-accent/30 hover:shadow-sm cursor-pointer"
         >
           <FileText className="h-6 w-6 text-muted-foreground" />
-          <span className="text-sm font-medium text-foreground">报告库</span>
+          <span className="text-sm font-medium text-foreground">分析日志</span>
         </Link>
         <Link
           to="/stockpicker"

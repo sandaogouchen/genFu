@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -150,7 +153,7 @@ func (s *Service) PickStocks(ctx context.Context, req StockPickRequest) (StockPi
 	if err != nil {
 		return StockPickResponse{}, fmt.Errorf("parse_output_failed: %w", err)
 	}
-	s.ensureStrategyGuide(output, screeningOutput)
+	s.attachTradeGuides(output, screeningOutput, screeningResult)
 
 	// 8. 补充资产配置信息
 	for i := range output.Stocks {
@@ -193,7 +196,6 @@ func (s *Service) PickStocks(ctx context.Context, req StockPickRequest) (StockPi
 		NewsSummary:   output.MarketView,
 		Warnings:      s.buildWarnings(marketData, newsEvents, stockList),
 		ScreeningInfo: screeningResult,
-		StrategyGuide: output.StrategyGuide,
 	}, nil
 }
 
@@ -361,256 +363,477 @@ func (s *Service) parseAgentOutput(content string) (*AgentOutput, error) {
 	if raw, ok := root["risk_notes"]; ok {
 		_ = json.Unmarshal(raw, &output.RiskNotes)
 	}
-	if raw, ok := root["strategy_guide"]; ok {
-		guide, err := parseStrategyGuide(raw)
-		if err != nil {
-			return nil, err
-		}
-		output.StrategyGuide = guide
-	}
 
 	return &output, nil
 }
 
-func parseStrategyGuide(raw json.RawMessage) (*StrategyGuide, error) {
-	if len(raw) == 0 || string(raw) == "null" {
-		return nil, nil
-	}
-
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &root); err != nil {
-		return nil, fmt.Errorf("strategy_guide_parse_error: %w", err)
-	}
-
-	guide := &StrategyGuide{}
-	_ = unmarshalJSONStringField(root, "strategy_type", &guide.StrategyType)
-	_ = unmarshalJSONStringField(root, "strategy_name", &guide.StrategyName)
-	_ = unmarshalJSONStringField(root, "guide_text", &guide.GuideText)
-
-	if tradeRaw, ok := root["trade_signals_json"]; ok {
-		tradeJSON, err := normalizeTradeSignalsJSON(tradeRaw)
-		if err == nil {
-			guide.TradeSignalsJSON = tradeJSON
-		}
-	}
-
-	return guide, nil
+type quantitativeRule struct {
+	RuleID       string  `json:"rule_id"`
+	Indicator    string  `json:"indicator"`
+	Operator     string  `json:"operator"`
+	TriggerValue float64 `json:"trigger_value"`
+	Timeframe    string  `json:"timeframe"`
+	Weight       float64 `json:"weight"`
+	Note         string  `json:"note"`
 }
 
-func unmarshalJSONStringField(root map[string]json.RawMessage, key string, out *string) error {
-	raw, ok := root[key]
-	if !ok {
-		return nil
-	}
-	return json.Unmarshal(raw, out)
+type quantitativeRiskControls struct {
+	StopLossPrice    float64 `json:"stop_loss_price"`
+	TakeProfitPrice  float64 `json:"take_profit_price"`
+	MaxPositionRatio float64 `json:"max_position_ratio"`
 }
 
-func normalizeTradeSignalsJSON(raw json.RawMessage) (string, error) {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" || trimmed == "null" {
-		return "", nil
-	}
-
-	var strVal string
-	if err := json.Unmarshal(raw, &strVal); err == nil {
-		normalized, ok := normalizeJSONString(strVal)
-		if !ok {
-			return "", errors.New("invalid_json_string")
-		}
-		return normalized, nil
-	}
-
-	var payload interface{}
-	if err := json.Unmarshal(raw, &payload); err == nil {
-		buf, err := json.Marshal(payload)
-		if err != nil {
-			return "", err
-		}
-		return string(buf), nil
-	}
-
-	return "", errors.New("unsupported_trade_signals_json_type")
+type stockTradeGuidePayload struct {
+	AssetType    string                   `json:"asset_type"`
+	StrategyType string                   `json:"strategy_type"`
+	StrategyName string                   `json:"strategy_name"`
+	Symbol       string                   `json:"symbol"`
+	PriceRef     float64                  `json:"price_ref"`
+	BuyRules     []quantitativeRule       `json:"buy_rules"`
+	SellRules    []quantitativeRule       `json:"sell_rules"`
+	RiskControls quantitativeRiskControls `json:"risk_controls"`
 }
 
-func normalizeJSONString(raw string) (string, bool) {
-	raw = strings.TrimSpace(raw)
-	raw = strings.TrimPrefix(raw, "```json")
-	raw = strings.TrimPrefix(raw, "```")
-	raw = strings.TrimSuffix(raw, "```")
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", false
-	}
+var numericPattern = regexp.MustCompile(`[-+]?\d*\.?\d+`)
 
-	var payload interface{}
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return "", false
-	}
-	out, err := json.Marshal(payload)
-	if err != nil {
-		return "", false
-	}
-	return string(out), true
-}
-
-type strategySignal struct {
-	Indicator string `json:"indicator"`
-	Signal    string `json:"signal"`
-	Action    string `json:"action"`
-}
-
-type strategyTradeSignals struct {
-	StrategyType string           `json:"strategy_type"`
-	BuySignals   []strategySignal `json:"buy_signals"`
-	SellSignals  []strategySignal `json:"sell_signals"`
-	RiskControls []string         `json:"risk_controls,omitempty"`
-}
-
-func (s *Service) ensureStrategyGuide(output *AgentOutput, screeningOutput *AgentScreeningOutput) {
+func (s *Service) attachTradeGuides(output *AgentOutput, screeningOutput *AgentScreeningOutput, screeningResult *ScreeningResult) {
 	if output == nil {
 		return
 	}
-	if output.StrategyGuide == nil {
-		output.StrategyGuide = &StrategyGuide{}
-	}
 
-	guide := output.StrategyGuide
-	conditions := ScreeningRequest{}
-	if screeningOutput != nil {
-		conditions = screeningOutput.ScreeningConditions
-		if guide.StrategyType == "" {
-			guide.StrategyType = screeningOutput.ScreeningConditions.StrategyType
-		}
-		if guide.StrategyName == "" {
-			guide.StrategyName = screeningOutput.StrategyName
-		}
+	for i := range output.Stocks {
+		text, raw := s.buildTradeGuideForStock(&output.Stocks[i], screeningOutput, screeningResult)
+		output.Stocks[i].TradeGuideText = text
+		output.Stocks[i].TradeGuideJSON = raw
+		output.Stocks[i].TradeGuideVersion = "v1"
 	}
-
-	if strings.TrimSpace(guide.GuideText) == "" {
-		guide.GuideText = s.buildStrategyGuideText(guide.StrategyName, conditions)
-	}
-	if normalized, ok := normalizeJSONString(guide.TradeSignalsJSON); ok {
-		guide.TradeSignalsJSON = normalized
-		return
-	}
-	guide.TradeSignalsJSON = s.buildStrategyTradeSignalsJSON(guide.StrategyType, conditions)
 }
 
-func (s *Service) buildStrategyGuideText(strategyName string, conditions ScreeningRequest) string {
-	name := strings.TrimSpace(strategyName)
-	if name == "" {
-		name = "当前筛选策略"
+func (s *Service) buildTradeGuideForStock(stock *StockPick, screeningOutput *AgentScreeningOutput, screeningResult *ScreeningResult) (string, string) {
+	if stock == nil {
+		return "", "{}"
 	}
 
-	parts := []string{
-		fmt.Sprintf("%s下优先在买入信号共振时分批建仓，任一核心卖出信号触发即减仓或离场。", name),
+	strategyType, strategyName, conditions := resolveStrategyMeta(screeningOutput, screeningResult)
+	screened := findScreenedStock(stock.Symbol, screeningResult)
+	priceRef := resolvePriceReference(stock, screened)
+	support, resistance := resolveSupportResistance(stock, priceRef)
+	stopLoss, takeProfit := resolveStopLossTakeProfit(stock, priceRef)
+
+	// 防守位不应高于突破位
+	if support >= resistance {
+		support = roundPrice(priceRef * 0.97)
+		resistance = roundPrice(priceRef * 1.02)
+	}
+	// 止损和止盈兜底
+	if stopLoss >= priceRef {
+		stopLoss = roundPrice(priceRef * 0.95)
+	}
+	if takeProfit <= priceRef {
+		takeProfit = roundPrice(priceRef * 1.10)
 	}
 
-	if conditions.MACDGolden != nil && *conditions.MACDGolden {
-		parts = append(parts, "重点观察MACD金叉与红柱放大。")
+	buyRules := []quantitativeRule{
+		{
+			RuleID:       "BUY_PRICE_BREAKOUT",
+			Indicator:    "price",
+			Operator:     ">=",
+			TriggerValue: resistance,
+			Timeframe:    "daily_close",
+			Weight:       0.35,
+			Note:         "收盘突破关键压力位后考虑建仓",
+		},
 	}
+	sellRules := []quantitativeRule{
+		{
+			RuleID:       "SELL_BREAK_SUPPORT",
+			Indicator:    "price",
+			Operator:     "<=",
+			TriggerValue: support,
+			Timeframe:    "daily_close",
+			Weight:       0.40,
+			Note:         "跌破关键支撑位执行减仓或离场",
+		},
+	}
+
 	if conditions.MA5AboveMA20 != nil && *conditions.MA5AboveMA20 {
-		parts = append(parts, "关注MA5站上MA20并保持向上。")
-	}
-	if conditions.VolumeSpike != nil && *conditions.VolumeSpike {
-		parts = append(parts, "放量突破有效，缩量回落需谨慎。")
-	}
-
-	parts = append(parts, "所有交易需先设止损，单笔仓位和总仓位遵守风险控制。")
-	return strings.Join(parts, "")
-}
-
-func (s *Service) buildStrategyTradeSignalsJSON(strategyType string, conditions ScreeningRequest) string {
-	buySignals := []strategySignal{}
-	sellSignals := []strategySignal{}
-
-	if conditions.MA5AboveMA20 != nil && *conditions.MA5AboveMA20 {
-		buySignals = append(buySignals, strategySignal{
-			Indicator: "MA5/MA20",
-			Signal:    "MA5上穿并连续2日站稳MA20",
-			Action:    "buy",
+		buyRules = append(buyRules, quantitativeRule{
+			RuleID:       "BUY_MA_CROSS",
+			Indicator:    "ma5_minus_ma20",
+			Operator:     ">",
+			TriggerValue: 0,
+			Timeframe:    "daily_close",
+			Weight:       0.22,
+			Note:         "MA5上穿并维持在MA20上方",
 		})
-		sellSignals = append(sellSignals, strategySignal{
-			Indicator: "MA5/MA20",
-			Signal:    "MA5下穿MA20且收盘跌破MA20",
-			Action:    "sell",
+		sellRules = append(sellRules, quantitativeRule{
+			RuleID:       "SELL_MA_CROSS_DOWN",
+			Indicator:    "ma5_minus_ma20",
+			Operator:     "<=",
+			TriggerValue: 0,
+			Timeframe:    "daily_close",
+			Weight:       0.28,
+			Note:         "MA5下穿MA20且趋势转弱",
 		})
 	}
 	if conditions.MA20Rising != nil && *conditions.MA20Rising {
-		buySignals = append(buySignals, strategySignal{
-			Indicator: "MA20趋势",
-			Signal:    "MA20持续上行且股价位于MA20上方",
-			Action:    "buy",
+		buyRules = append(buyRules, quantitativeRule{
+			RuleID:       "BUY_MA20_SLOPE_UP",
+			Indicator:    "ma20_slope",
+			Operator:     ">",
+			TriggerValue: 0,
+			Timeframe:    "daily_close",
+			Weight:       0.16,
+			Note:         "MA20保持上行，趋势未破坏",
 		})
-		sellSignals = append(sellSignals, strategySignal{
-			Indicator: "MA20趋势",
-			Signal:    "MA20拐头向下并失守MA20",
-			Action:    "sell",
+		sellRules = append(sellRules, quantitativeRule{
+			RuleID:       "SELL_MA20_SLOPE_DOWN",
+			Indicator:    "ma20_slope",
+			Operator:     "<=",
+			TriggerValue: 0,
+			Timeframe:    "daily_close",
+			Weight:       0.20,
+			Note:         "MA20拐头向下，趋势级别走弱",
 		})
 	}
 	if conditions.MACDGolden != nil && *conditions.MACDGolden {
-		buySignals = append(buySignals, strategySignal{
-			Indicator: "MACD",
-			Signal:    "DIF上穿DEA且红柱放大",
-			Action:    "buy",
+		buyRules = append(buyRules, quantitativeRule{
+			RuleID:       "BUY_MACD_GOLDEN",
+			Indicator:    "macd_diff",
+			Operator:     ">",
+			TriggerValue: 0,
+			Timeframe:    "daily_close",
+			Weight:       0.18,
+			Note:         "MACD快慢线金叉并维持红柱",
 		})
-		sellSignals = append(sellSignals, strategySignal{
-			Indicator: "MACD",
-			Signal:    "DIF下穿DEA且绿柱放大",
-			Action:    "sell",
+		sellRules = append(sellRules, quantitativeRule{
+			RuleID:       "SELL_MACD_DEAD",
+			Indicator:    "macd_diff",
+			Operator:     "<=",
+			TriggerValue: 0,
+			Timeframe:    "daily_close",
+			Weight:       0.22,
+			Note:         "MACD死叉或绿柱持续扩大",
 		})
 	}
 	if conditions.RSIOversold != nil && *conditions.RSIOversold {
-		buySignals = append(buySignals, strategySignal{
-			Indicator: "RSI",
-			Signal:    "RSI低于30后重新上穿30",
-			Action:    "buy",
+		buyRules = append(buyRules, quantitativeRule{
+			RuleID:       "BUY_RSI_RECOVER",
+			Indicator:    "rsi",
+			Operator:     ">=",
+			TriggerValue: 30,
+			Timeframe:    "daily_close",
+			Weight:       0.14,
+			Note:         "RSI由超卖区回升至30上方",
 		})
-		sellSignals = append(sellSignals, strategySignal{
-			Indicator: "RSI",
-			Signal:    "RSI接近70且回落",
-			Action:    "sell",
+		sellRules = append(sellRules, quantitativeRule{
+			RuleID:       "SELL_RSI_OVERHEAT",
+			Indicator:    "rsi",
+			Operator:     ">=",
+			TriggerValue: 70,
+			Timeframe:    "daily_close",
+			Weight:       0.18,
+			Note:         "RSI进入高位后回落风险增加",
+		})
+	}
+	if conditions.RSIOverbought != nil && *conditions.RSIOverbought {
+		buyRules = append(buyRules, quantitativeRule{
+			RuleID:       "BUY_RSI_STRONG",
+			Indicator:    "rsi",
+			Operator:     ">=",
+			TriggerValue: 55,
+			Timeframe:    "daily_close",
+			Weight:       0.10,
+			Note:         "RSI维持强势区间，趋势仍有延续性",
+		})
+		sellRules = append(sellRules, quantitativeRule{
+			RuleID:       "SELL_RSI_WEAKEN",
+			Indicator:    "rsi",
+			Operator:     "<=",
+			TriggerValue: 50,
+			Timeframe:    "daily_close",
+			Weight:       0.16,
+			Note:         "RSI跌破中轴，趋势动能明显衰减",
 		})
 	}
 	if conditions.VolumeSpike != nil && *conditions.VolumeSpike {
-		buySignals = append(buySignals, strategySignal{
-			Indicator: "成交量",
-			Signal:    "放量突破关键压力位",
-			Action:    "buy",
+		buyRules = append(buyRules, quantitativeRule{
+			RuleID:       "BUY_VOLUME_CONFIRM",
+			Indicator:    "volume_ratio",
+			Operator:     ">=",
+			TriggerValue: 2.0,
+			Timeframe:    "daily_close",
+			Weight:       0.15,
+			Note:         "放量确认突破有效性",
 		})
-		sellSignals = append(sellSignals, strategySignal{
-			Indicator: "成交量",
-			Signal:    "高位放量滞涨或跌破前低",
-			Action:    "sell",
-		})
-	}
-
-	if len(buySignals) == 0 {
-		buySignals = append(buySignals, strategySignal{
-			Indicator: "综合信号",
-			Signal:    "价格站稳关键均线并伴随量能改善",
-			Action:    "buy",
-		})
-	}
-	if len(sellSignals) == 0 {
-		sellSignals = append(sellSignals, strategySignal{
-			Indicator: "综合风控",
-			Signal:    "跌破关键支撑或策略前提失效",
-			Action:    "sell",
+		sellRules = append(sellRules, quantitativeRule{
+			RuleID:       "SELL_VOLUME_FAILURE",
+			Indicator:    "volume_ratio",
+			Operator:     "<=",
+			TriggerValue: 1.0,
+			Timeframe:    "daily_close",
+			Weight:       0.14,
+			Note:         "缩量回落且无法再创新高",
 		})
 	}
 
-	payload := strategyTradeSignals{
+	if len(buyRules) == 1 {
+		buyRules = append(buyRules, quantitativeRule{
+			RuleID:       "BUY_TREND_CONFIRM",
+			Indicator:    "trend_strength",
+			Operator:     ">=",
+			TriggerValue: 0.6,
+			Timeframe:    "daily_close",
+			Weight:       0.15,
+			Note:         "趋势强度维持中高位",
+		})
+	}
+	if len(sellRules) == 1 {
+		sellRules = append(sellRules, quantitativeRule{
+			RuleID:       "SELL_TREND_BREAK",
+			Indicator:    "trend_strength",
+			Operator:     "<=",
+			TriggerValue: 0.35,
+			Timeframe:    "daily_close",
+			Weight:       0.15,
+			Note:         "趋势强度快速回落",
+		})
+	}
+
+	requiredSignals := 2
+	if len(buyRules) < 2 {
+		requiredSignals = 1
+	}
+	guideText := fmt.Sprintf(
+		"%s策略下建议当买入规则至少%d条同时触发时分批建仓；若任一核心卖出规则触发或跌破止损价则减仓离场。当前量化阈值：突破买入¥%.2f，防守位¥%.2f，止损¥%.2f，止盈¥%.2f。",
+		strategyName,
+		requiredSignals,
+		resistance,
+		support,
+		stopLoss,
+		takeProfit,
+	)
+
+	payload := stockTradeGuidePayload{
+		AssetType:    "stock",
 		StrategyType: strategyType,
-		BuySignals:   buySignals,
-		SellSignals:  sellSignals,
-		RiskControls: []string{
-			"单笔亏损达到预设阈值立即止损",
-			"单只个股仓位不超过总资金20%",
+		StrategyName: strategyName,
+		Symbol:       stock.Symbol,
+		PriceRef:     priceRef,
+		BuyRules:     buyRules,
+		SellRules:    sellRules,
+		RiskControls: quantitativeRiskControls{
+			StopLossPrice:    stopLoss,
+			TakeProfitPrice:  takeProfit,
+			MaxPositionRatio: 0.2,
 		},
 	}
-	raw, _ := json.Marshal(payload)
-	return string(raw)
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return guideText, "{}"
+	}
+	return guideText, string(raw)
+}
+
+func resolveStrategyMeta(screeningOutput *AgentScreeningOutput, screeningResult *ScreeningResult) (string, string, ScreeningRequest) {
+	conditions := ScreeningRequest{}
+	strategyType := ""
+	strategyName := ""
+	if screeningOutput != nil {
+		conditions = screeningOutput.ScreeningConditions
+		strategyType = strings.TrimSpace(screeningOutput.ScreeningConditions.StrategyType)
+		strategyName = strings.TrimSpace(screeningOutput.StrategyName)
+	}
+	if strategyType == "" && screeningResult != nil {
+		strategyType = strings.TrimSpace(screeningResult.StrategyType)
+	}
+	if strategyType == "" {
+		strategyType = "balanced_stock_selection"
+	}
+	if strategyName == "" {
+		strategyName = strategyType
+	}
+	return strategyType, strategyName, conditions
+}
+
+func findScreenedStock(symbol string, screeningResult *ScreeningResult) *ScreenedStock {
+	if screeningResult == nil || symbol == "" {
+		return nil
+	}
+	for i := range screeningResult.Stocks {
+		if screeningResult.Stocks[i].Symbol == symbol {
+			return &screeningResult.Stocks[i]
+		}
+	}
+	return nil
+}
+
+func resolvePriceReference(stock *StockPick, screened *ScreenedStock) float64 {
+	if stock != nil && stock.CurrentPrice > 0 {
+		return roundPrice(stock.CurrentPrice)
+	}
+	if screened != nil && screened.Price > 0 {
+		return roundPrice(screened.Price)
+	}
+	return 1
+}
+
+func resolveSupportResistance(stock *StockPick, priceRef float64) (float64, float64) {
+	supportCandidates := []float64{}
+	resistanceCandidates := []float64{}
+
+	if stock != nil {
+		for _, level := range stock.TechnicalReasons.KeyLevels {
+			value, ok := parseFirstNumber(level)
+			if !ok || value <= 0 {
+				continue
+			}
+			lower := strings.ToLower(level)
+			if strings.Contains(lower, "支撑") {
+				supportCandidates = append(supportCandidates, value)
+			}
+			if strings.Contains(lower, "压力") {
+				resistanceCandidates = append(resistanceCandidates, value)
+			}
+		}
+
+		if stock.OperationGuide != nil {
+			for _, cond := range stock.OperationGuide.BuyConditions {
+				value, ok := parseConditionValue(cond)
+				if !ok {
+					continue
+				}
+				lower := strings.ToLower(cond.Description)
+				if strings.Contains(lower, "突破") || strings.Contains(lower, "压力") {
+					resistanceCandidates = append(resistanceCandidates, value)
+				}
+				if strings.Contains(lower, "支撑") || strings.Contains(lower, "回调") {
+					supportCandidates = append(supportCandidates, value)
+				}
+			}
+			for _, cond := range stock.OperationGuide.SellConditions {
+				value, ok := parseConditionValue(cond)
+				if !ok {
+					continue
+				}
+				lower := strings.ToLower(cond.Description)
+				if strings.Contains(lower, "跌破") || strings.Contains(lower, "支撑") {
+					supportCandidates = append(supportCandidates, value)
+				}
+				if strings.Contains(lower, "突破") || strings.Contains(lower, "压力") {
+					resistanceCandidates = append(resistanceCandidates, value)
+				}
+			}
+		}
+	}
+
+	support, okSupport := chooseSupportLevel(supportCandidates, priceRef)
+	resistance, okResistance := chooseResistanceLevel(resistanceCandidates, priceRef)
+	if !okSupport {
+		support = roundPrice(priceRef * 0.97)
+	}
+	if !okResistance {
+		resistance = roundPrice(priceRef * 1.02)
+	}
+	return support, resistance
+}
+
+func resolveStopLossTakeProfit(stock *StockPick, priceRef float64) (float64, float64) {
+	stopLoss := roundPrice(priceRef * 0.95)
+	takeProfit := roundPrice(priceRef * 1.10)
+	if stock == nil || stock.OperationGuide == nil {
+		return stopLoss, takeProfit
+	}
+
+	if value, ok := parseFirstNumber(stock.OperationGuide.StopLoss); ok && value > 0 {
+		stopLoss = roundPrice(value)
+	}
+	if value, ok := parseFirstNumber(stock.OperationGuide.TakeProfit); ok && value > 0 {
+		takeProfit = roundPrice(value)
+	}
+	return stopLoss, takeProfit
+}
+
+func chooseSupportLevel(candidates []float64, priceRef float64) (float64, bool) {
+	best := 0.0
+	found := false
+	for _, c := range candidates {
+		if c <= 0 {
+			continue
+		}
+		if c <= priceRef {
+			if !found || c > best {
+				best = c
+				found = true
+			}
+		}
+	}
+	if found {
+		return roundPrice(best), true
+	}
+
+	for _, c := range candidates {
+		if c > 0 {
+			return roundPrice(c), true
+		}
+	}
+	return 0, false
+}
+
+func chooseResistanceLevel(candidates []float64, priceRef float64) (float64, bool) {
+	best := 0.0
+	found := false
+	for _, c := range candidates {
+		if c <= 0 {
+			continue
+		}
+		if c >= priceRef {
+			if !found || c < best {
+				best = c
+				found = true
+			}
+		}
+	}
+	if found {
+		return roundPrice(best), true
+	}
+
+	for _, c := range candidates {
+		if c > 0 {
+			return roundPrice(c), true
+		}
+	}
+	return 0, false
+}
+
+func parseConditionValue(cond Condition) (float64, bool) {
+	if v, ok := parseFirstNumber(cond.Value); ok {
+		return v, true
+	}
+	return parseFirstNumber(cond.Description)
+}
+
+func parseFirstNumber(raw string) (float64, bool) {
+	cleaned := strings.TrimSpace(strings.ReplaceAll(raw, ",", ""))
+	if cleaned == "" {
+		return 0, false
+	}
+	token := numericPattern.FindString(cleaned)
+	if token == "" {
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(token, 64)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+func roundPrice(v float64) float64 {
+	if v <= 0 {
+		return 0
+	}
+	return math.Round(v*100) / 100
 }
 
 // buildWarnings 构建警告信息

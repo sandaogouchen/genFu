@@ -142,3 +142,82 @@ func TestNormalizeEastMoneyOptions(t *testing.T) {
 		t.Fatalf("unexpected user agent: %s", custom.UserAgent)
 	}
 }
+
+func TestParseFundSearchResponseFromDatas(t *testing.T) {
+	body := []byte(`{"Datas":["000001,华夏成长混合,extra","000002,中欧医疗健康混合A","bad-row"]}`)
+	items, err := parseFundSearchResponse(body, 10)
+	if err != nil {
+		t.Fatalf("parseFundSearchResponse err=%v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	if items[0].Code != "000001" || items[0].Name != "华夏成长混合" || items[0].Type != "fund" {
+		t.Fatalf("unexpected first item: %+v", items[0])
+	}
+	if items[1].Code != "000002" || items[1].Name != "中欧医疗健康混合A" || items[1].Type != "fund" {
+		t.Fatalf("unexpected second item: %+v", items[1])
+	}
+}
+
+func TestParseFundSearchResponseJSONPAndLimit(t *testing.T) {
+	body := []byte(`jQuery123({"Datas":["000001,华夏成长混合","000002,中欧医疗健康混合A","000003,易方达蓝筹精选"]})`)
+	items, err := parseFundSearchResponse(body, 2)
+	if err != nil {
+		t.Fatalf("parseFundSearchResponse err=%v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	if items[0].Code != "000001" || items[1].Code != "000002" {
+		t.Fatalf("unexpected item order: %+v", items)
+	}
+}
+
+func TestParseFundSearchResponseFallbackDataObject(t *testing.T) {
+	body := []byte(`{"Data":[{"Code":"161725","Name":"招商中证白酒指数"},{"FCode":"110011","ShortName":"易方达中小盘"}]}`)
+	items, err := parseFundSearchResponse(body, 10)
+	if err != nil {
+		t.Fatalf("parseFundSearchResponse err=%v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	if items[0].Code != "161725" || items[0].Name != "招商中证白酒指数" {
+		t.Fatalf("unexpected first item: %+v", items[0])
+	}
+	if items[1].Code != "110011" || items[1].Name != "易方达中小盘" {
+		t.Fatalf("unexpected second item: %+v", items[1])
+	}
+}
+
+func TestParseFundSearchResponseSkipsBadRows(t *testing.T) {
+	body := []byte(`{"Datas":["bad-row","000001,华夏成长混合",""],"Data":[{"Code":"","Name":"skip"},{"Code":"110022","Name":"易方达消费行业"}]}`)
+	items, err := parseFundSearchResponse(body, 10)
+	if err != nil {
+		t.Fatalf("parseFundSearchResponse err=%v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	if items[0].Code != "000001" || items[1].Code != "110022" {
+		t.Fatalf("unexpected parsed codes: %+v", items)
+	}
+}
+
+func TestParseFundSearchResponseDatasObjectRows(t *testing.T) {
+	body := []byte(`{"Datas":[{"Code":"519674","Name":"银河创新成长混合A"},{"Code":"161725","Name":"招商中证白酒指数"}]}`)
+	items, err := parseFundSearchResponse(body, 10)
+	if err != nil {
+		t.Fatalf("parseFundSearchResponse err=%v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	if items[0].Code != "519674" || items[0].Name != "银河创新成长混合A" {
+		t.Fatalf("unexpected first item: %+v", items[0])
+	}
+	if items[1].Code != "161725" || items[1].Name != "招商中证白酒指数" {
+		t.Fatalf("unexpected second item: %+v", items[1])
+	}
+}

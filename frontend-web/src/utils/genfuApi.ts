@@ -14,6 +14,9 @@ export type AnalyzeRequest = {
   kline?: string;
   manager?: string;
   meta?: Record<string, string>;
+  session_id?: string;
+  session_title?: string;
+  prompt?: string;
 };
 
 export type AnalyzeStep = {
@@ -32,38 +35,12 @@ export type AnalyzeResponse = {
   report_id?: number;
 };
 
-// Report types
-export type ReportListItem = {
-  id: number;
-  report_type: string;
-  symbol: string;
-  name: string;
-  title: string;
-  created_at: string;
-};
-
-export type ReportListResponse = {
-  items: ReportListItem[];
-  total: number;
-  page: number;
-  page_size: number;
-};
-
-export type ReportDetail = {
-  id: number;
-  report_type: string;
-  symbol: string;
-  name: string;
-  title: string;
-  request: AnalyzeRequest;
-  steps: AnalyzeStep[];
-  summary: string;
-  created_at: string;
-};
-
 export type DecisionRequest = {
   report_ids?: number[];
   meta?: Record<string, string>;
+  session_id?: string;
+  session_title?: string;
+  prompt?: string;
 };
 
 export type DecisionItem = {
@@ -113,10 +90,14 @@ export type DecisionResponse = {
 
 export type StockWorkflowInput = {
   symbol: string;
+  account_id?: number;
   name?: string;
   stock_news_routes?: string[];
   industry_news_routes?: string[];
   news_limit?: number;
+  session_id?: string;
+  session_title?: string;
+  prompt?: string;
 };
 
 export type HoldingPosition = {
@@ -524,6 +505,9 @@ export type StockPickRequest = {
   top_n?: number;
   date_from?: string;
   date_to?: string;
+  session_id?: string;
+  session_title?: string;
+  prompt?: string;
 };
 
 export type TechnicalReason = {
@@ -550,15 +534,15 @@ export type StockPick = {
   recommendation: "buy" | "watch";
   confidence: number;
   technical_reasons: TechnicalReason;
+  operation_guide?: {
+    stop_loss?: string;
+    take_profit?: string;
+  };
+  trade_guide_text: string;
+  trade_guide_json: string;
+  trade_guide_version: string;
   risk_level: "low" | "medium" | "high";
   allocation: Allocation;
-};
-
-export type StrategyGuide = {
-  strategy_type?: string;
-  strategy_name?: string;
-  guide_text: string;
-  trade_signals_json: string;
 };
 
 export type IndexQuote = {
@@ -586,9 +570,102 @@ export type StockPickResponse = {
   market_data: MarketData;
   news_summary: string;
   warnings?: string[];
-  strategy_guide?: StrategyGuide;
+};
+
+export type ConversationScene = "analyze" | "decision" | "stockpicker" | "workflow";
+
+export type ConversationSession = {
+  id: string;
+  scene: ConversationScene;
+  title: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ConversationSessionsResponse = {
+  items: ConversationSession[];
+  limit: number;
+  offset: number;
+};
+
+export type ConversationRun = {
+  id: number;
+  session_id: string;
+  prompt: string;
+  request: unknown;
+  result?: unknown;
+  error?: string;
+  created_at: string;
+};
+
+export type ConversationRunsResponse = {
+  items: ConversationRun[];
+  limit: number;
 };
 
 export async function pickStocks(request: StockPickRequest): Promise<StockPickResponse> {
   return postJson<StockPickResponse>("/api/stockpicker", request);
+}
+
+export async function createConversationSession(payload: {
+  scene: ConversationScene;
+  title?: string;
+}): Promise<ConversationSession> {
+  return postJson<ConversationSession>("/api/conversations/sessions", payload);
+}
+
+export async function listConversationSessions(
+  scene: ConversationScene,
+  limit = 50,
+  offset = 0
+): Promise<ConversationSessionsResponse> {
+  const params = new URLSearchParams({
+    scene,
+    limit: String(limit),
+    offset: String(offset),
+  });
+  return getJson<ConversationSessionsResponse>(`/api/conversations/sessions?${params.toString()}`);
+}
+
+export async function renameConversationSession(
+  sessionId: string,
+  title: string
+): Promise<ConversationSession> {
+  const resp = await fetch(`/api/conversations/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
+    body: JSON.stringify({ title }),
+  });
+  if (!resp.ok) {
+    const msg = await resp.text().catch(() => "");
+    throw new Error(msg || `HTTP ${resp.status}`);
+  }
+  return (await resp.json()) as ConversationSession;
+}
+
+export async function deleteConversationSession(sessionId: string): Promise<void> {
+  const resp = await fetch(`/api/conversations/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+    headers: {
+      ...authHeaders(),
+    },
+  });
+  if (!resp.ok) {
+    const msg = await resp.text().catch(() => "");
+    throw new Error(msg || `HTTP ${resp.status}`);
+  }
+}
+
+export async function listConversationRuns(
+  sessionId: string,
+  limit = 100
+): Promise<ConversationRunsResponse> {
+  const params = new URLSearchParams({
+    session_id: sessionId,
+    limit: String(limit),
+  });
+  return getJson<ConversationRunsResponse>(`/api/conversations/runs?${params.toString()}`);
 }

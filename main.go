@@ -23,6 +23,7 @@ import (
 	"genFu/internal/api"
 	"genFu/internal/chat"
 	"genFu/internal/config"
+	"genFu/internal/conversationlog"
 	"genFu/internal/db"
 	decision "genFu/internal/decision"
 	"genFu/internal/financial"
@@ -86,6 +87,7 @@ func main() {
 	}
 	chatRepo := chat.NewRepository(database)
 	chatService := chat.NewService(chatModel, chatRepo, registry)
+	conversationRepo := conversationlog.NewRepository(database)
 
 	defaultAgent := agent.NewFuncAgent("default", []string{"chat"}, agent.DefaultGenerate)
 	toolAgent := agent.NewFuncAgent("tool", []string{"tool"}, agent.ToolGenerate)
@@ -249,7 +251,7 @@ func main() {
 	r.AddRoute([]string{"辩论", "多空", "debate"}, debateAgent)
 
 	ocrHandler := api.NewOcrHoldingsHandler(appConfig.LLM, investmentSvc, "internal/agent/prompt/ocr_holdings.md")
-	srv := server.NewServer(r, registry, analyzer, decisionSvc, stockpickerSvc, stockpickerGuideRepo, chatService, stockWF, ocrHandler, newsPipeline, newsRepo)
+	srv := server.NewServer(r, registry, analyzer, decisionSvc, stockpickerSvc, stockpickerGuideRepo, chatService, stockWF, ocrHandler, newsPipeline, newsRepo, conversationRepo)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 

@@ -166,6 +166,18 @@ func (s *Service) AddPositionByCost(ctx context.Context, accountID int64, symbol
 	return s.repo.SetPosition(ctx, accountID, instrument.ID, quantity, avgCost, marketPrice)
 }
 
+// AddPositionByQuantity 按持有数量和成本单价添加持仓
+// quantity: 持有数量
+// avgCost: 成本单价
+// marketPrice: 当前市价（可选）
+func (s *Service) AddPositionByQuantity(ctx context.Context, accountID int64, symbol string, name string, assetType string, quantity float64, avgCost float64, marketPrice *float64) (Position, error) {
+	instrument, err := s.GetOrCreateInstrumentBySymbol(ctx, symbol, name, assetType)
+	if err != nil {
+		return Position{}, err
+	}
+	return s.repo.SetPosition(ctx, accountID, instrument.ID, quantity, avgCost, marketPrice)
+}
+
 // AddPositionByPnL 按当前盈利添加持仓
 // pnl: 当前盈利金额
 // avgCost: 买入成本价

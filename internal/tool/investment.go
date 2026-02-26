@@ -2,18 +2,85 @@ package tool
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"genFu/internal/investment"
 )
 
 type InvestmentTool struct {
-	svc        *investment.Service
-	eastMoney  EastMoneyTool
-	marketData MarketDataTool
+	svc           *investment.Service
+	eastMoney     EastMoneyTool
+	marketData    MarketDataTool
+	priceResolver PortfolioPriceResolver
+}
+
+type PortfolioPriceResolver interface {
+	ResolveStockPrice(ctx context.Context, symbol string) (float64, error)
+	ResolveFundPrice(ctx context.Context, symbol string) (float64, error)
+}
+
+type marketDataExecutor interface {
+	Execute(ctx context.Context, args map[string]interface{}) (ToolResult, error)
+}
+
+type defaultPortfolioPriceResolver struct {
+	marketData marketDataExecutor
+}
+
+const (
+	portfolioPriceSourceRealtime = "realtime"
+	portfolioPriceSourceStored   = "stored"
+	portfolioPriceSourceAvgCost  = "avg_cost"
+	maxQuoteConcurrency          = 4
+	perQuoteTimeout              = 4 * time.Second
+)
+
+type PortfolioSnapshotPriceFailure struct {
+	Symbol    string `json:"symbol"`
+	Name      string `json:"name"`
+	AssetType string `json:"asset_type"`
+	Reason    string `json:"reason"`
+}
+
+type PortfolioSnapshotPosition struct {
+	ID           int64                 `json:"id"`
+	AccountID    int64                 `json:"account_id"`
+	Instrument   investment.Instrument `json:"instrument"`
+	Quantity     float64               `json:"quantity"`
+	AvgCost      float64               `json:"avg_cost"`
+	MarketPrice  *float64              `json:"market_price,omitempty"`
+	CurrentPrice float64               `json:"current_price"`
+	PriceSource  string                `json:"price_source"`
+	Cost         float64               `json:"cost"`
+	MarketValue  float64               `json:"market_value"`
+	PnL          float64               `json:"pnl"`
+	PnLPct       float64               `json:"pnl_pct"`
+	CreatedAt    time.Time             `json:"created_at"`
+	UpdatedAt    time.Time             `json:"updated_at"`
+}
+
+type PortfolioSnapshotSummary struct {
+	AccountID     int64   `json:"account_id"`
+	PositionCount int64   `json:"position_count"`
+	TradeCount    int64   `json:"trade_count"`
+	TotalCost     float64 `json:"total_cost"`
+	TotalValue    float64 `json:"total_value"`
+	TotalPnL      float64 `json:"total_pnl"`
+	PnLPct        float64 `json:"pnl_pct"`
+}
+
+type PortfolioSnapshot struct {
+	Positions      []PortfolioSnapshotPosition     `json:"positions"`
+	Summary        PortfolioSnapshotSummary        `json:"summary"`
+	RefreshedAt    string                          `json:"refreshed_at"`
+	HasStalePrices bool                            `json:"has_stale_prices"`
+	PriceFailures  []PortfolioSnapshotPriceFailure `json:"price_failures,omitempty"`
 }
 
 func NewInvestmentTool(svc *investment.Service) InvestmentTool {
@@ -21,10 +88,25 @@ func NewInvestmentTool(svc *investment.Service) InvestmentTool {
 }
 
 func NewInvestmentToolWithEastMoney(svc *investment.Service, eastMoney EastMoneyTool) InvestmentTool {
+	marketData := NewMarketDataTool(svc)
+	return NewInvestmentToolWithResolver(svc, eastMoney, marketData, newDefaultPortfolioPriceResolver(marketData))
+}
+
+func NewInvestmentToolWithResolver(svc *investment.Service, eastMoney EastMoneyTool, marketData MarketDataTool, resolver PortfolioPriceResolver) InvestmentTool {
+	if resolver == nil {
+		resolver = newDefaultPortfolioPriceResolver(marketData)
+	}
 	return InvestmentTool{
-		svc:        svc,
-		eastMoney:  eastMoney,
-		marketData: NewMarketDataTool(svc),
+		svc:           svc,
+		eastMoney:     eastMoney,
+		marketData:    marketData,
+		priceResolver: resolver,
+	}
+}
+
+func newDefaultPortfolioPriceResolver(marketData marketDataExecutor) PortfolioPriceResolver {
+	return defaultPortfolioPriceResolver{
+		marketData: marketData,
 	}
 }
 
@@ -89,6 +171,7 @@ func (t InvestmentTool) Execute(ctx context.Context, args map[string]interface{}
 					"record_valuation",
 					"analyze_pnl",
 					"get_portfolio_summary",
+					"get_portfolio_snapshot",
 					"list_positions",
 					"list_fund_holdings",
 					"get_position",
@@ -99,6 +182,7 @@ func (t InvestmentTool) Execute(ctx context.Context, args map[string]interface{}
 					"add_position_by_cost",
 					"add_position_by_pnl",
 					"add_position_simple",
+					"add_position_by_quantity",
 				},
 			},
 		}, nil
@@ -239,6 +323,13 @@ func (t InvestmentTool) Execute(ctx context.Context, args map[string]interface{}
 		}
 		summary, err := t.svc.GetPortfolioSummary(ctx, accountID)
 		return ToolResult{Name: "investment", Output: summary, Error: errorString(err)}, err
+	case "get_portfolio_snapshot":
+		accountID, err := resolveAccountID(ctx, t.svc, args)
+		if err != nil {
+			return ToolResult{Name: "investment", Error: err.Error()}, err
+		}
+		snapshot, err := t.GetPortfolioSnapshot(ctx, accountID)
+		return ToolResult{Name: "investment", Output: snapshot, Error: errorString(err)}, err
 	case "analyze_pnl":
 		accountID, err := requireInt64(args, "account_id")
 		if err != nil {
@@ -307,24 +398,23 @@ func (t InvestmentTool) Execute(ctx context.Context, args map[string]interface{}
 			return ToolResult{Name: "investment", Error: err.Error()}, err
 		}
 		limit, _ := optionalInt(args, "limit")
-		// 优先使用外部API搜索
 		externalResults, err := t.eastMoney.SearchInstruments(ctx, query, limit)
-		if err == nil && len(externalResults) > 0 {
-			// 转换为统一格式
-			instruments := make([]map[string]interface{}, 0, len(externalResults))
-			for _, item := range externalResults {
-				instruments = append(instruments, map[string]interface{}{
-					"symbol":     item.Code,
-					"name":       item.Name,
-					"asset_type": item.Type,
-					"price":      item.Price,
-				})
-			}
-			return ToolResult{Name: "investment", Output: instruments, Error: ""}, nil
+		if err != nil {
+			return ToolResult{Name: "investment", Error: err.Error()}, err
 		}
-		// 如果外部API失败，降级到本地数据库搜索
-		instruments, err := t.svc.SearchInstruments(ctx, query, limit)
-		return ToolResult{Name: "investment", Output: instruments, Error: errorString(err)}, err
+		instruments := make([]map[string]interface{}, 0, len(externalResults))
+		for _, item := range externalResults {
+			record := map[string]interface{}{
+				"symbol":     item.Code,
+				"name":       item.Name,
+				"asset_type": "fund",
+			}
+			if item.Price > 0 {
+				record["price"] = item.Price
+			}
+			instruments = append(instruments, record)
+		}
+		return ToolResult{Name: "investment", Output: instruments, Error: ""}, nil
 	case "add_position_by_value":
 		accountID, err := resolveAccountID(ctx, t.svc, args)
 		if err != nil {
@@ -422,9 +512,358 @@ func (t InvestmentTool) Execute(ctx context.Context, args map[string]interface{}
 		marketPrice, _ := optionalFloat64Value(args, "market_price")
 		position, err := t.svc.AddPositionSimple(ctx, accountID, symbol, name, assetType, cost, currentValue, marketPrice)
 		return ToolResult{Name: "investment", Output: position, Error: errorString(err)}, err
+	case "add_position_by_quantity":
+		accountID, err := resolveAccountID(ctx, t.svc, args)
+		if err != nil {
+			return ToolResult{Name: "investment", Error: err.Error()}, err
+		}
+		symbol, err := requireString(args, "symbol")
+		if err != nil {
+			return ToolResult{Name: "investment", Error: err.Error()}, err
+		}
+		name := optionalString(args, "name")
+		assetType := optionalString(args, "asset_type")
+		quantity, err := requireFloat64(args, "quantity")
+		if err != nil {
+			return ToolResult{Name: "investment", Error: err.Error()}, err
+		}
+		avgCost, err := requireFloat64(args, "avg_cost")
+		if err != nil {
+			return ToolResult{Name: "investment", Error: err.Error()}, err
+		}
+		marketPrice, err := optionalFloat64(args, "market_price")
+		if err != nil {
+			return ToolResult{Name: "investment", Error: err.Error()}, err
+		}
+		symbol, name = normalizeInstrumentIdentity(symbol, name)
+		position, err := t.svc.AddPositionByQuantity(ctx, accountID, symbol, name, assetType, quantity, avgCost, marketPrice)
+		return ToolResult{Name: "investment", Output: position, Error: errorString(err)}, err
 	default:
 		return ToolResult{Name: "investment", Error: "unsupported_action"}, errors.New("unsupported_action")
 	}
+}
+
+func (t InvestmentTool) GetPortfolioSnapshot(ctx context.Context, accountID int64) (PortfolioSnapshot, error) {
+	positions, err := t.svc.ListPositions(ctx, accountID)
+	if err != nil {
+		return PortfolioSnapshot{}, err
+	}
+
+	portfolioSummary, err := t.svc.GetPortfolioSummary(ctx, accountID)
+	if err != nil {
+		return PortfolioSnapshot{}, err
+	}
+
+	snapshot := PortfolioSnapshot{
+		Positions: make([]PortfolioSnapshotPosition, len(positions)),
+		Summary: PortfolioSnapshotSummary{
+			AccountID:     accountID,
+			PositionCount: portfolioSummary.PositionCount,
+			TradeCount:    portfolioSummary.TradeCount,
+		},
+		RefreshedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if len(positions) == 0 {
+		return snapshot, nil
+	}
+
+	resolver := t.priceResolver
+	if resolver == nil {
+		resolver = newDefaultPortfolioPriceResolver(t.marketData)
+	}
+
+	type quoteResult struct {
+		price   float64
+		source  string
+		failure string
+	}
+	results := make([]quoteResult, len(positions))
+	sem := make(chan struct{}, maxQuoteConcurrency)
+	var wg sync.WaitGroup
+
+	for i := range positions {
+		wg.Add(1)
+		i := i
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			quoteCtx, cancel := context.WithTimeout(ctx, perQuoteTimeout)
+			defer cancel()
+
+			price, source, failure := resolvePositionPrice(quoteCtx, resolver, positions[i])
+			results[i] = quoteResult{price: price, source: source, failure: failure}
+		}()
+	}
+	wg.Wait()
+
+	for i, p := range positions {
+		res := results[i]
+		cost := p.Quantity * p.AvgCost
+		value := p.Quantity * res.price
+		pnl := value - cost
+		pnlPct := 0.0
+		if cost != 0 {
+			pnlPct = pnl / cost
+		}
+
+		snapshot.Positions[i] = PortfolioSnapshotPosition{
+			ID:           p.ID,
+			AccountID:    p.AccountID,
+			Instrument:   p.Instrument,
+			Quantity:     p.Quantity,
+			AvgCost:      p.AvgCost,
+			MarketPrice:  p.MarketPrice,
+			CurrentPrice: res.price,
+			PriceSource:  res.source,
+			Cost:         cost,
+			MarketValue:  value,
+			PnL:          pnl,
+			PnLPct:       pnlPct,
+			CreatedAt:    p.CreatedAt,
+			UpdatedAt:    p.UpdatedAt,
+		}
+		snapshot.Summary.TotalCost += cost
+		snapshot.Summary.TotalValue += value
+
+		if res.source != portfolioPriceSourceRealtime {
+			snapshot.HasStalePrices = true
+		}
+		if strings.TrimSpace(res.failure) != "" {
+			snapshot.PriceFailures = append(snapshot.PriceFailures, PortfolioSnapshotPriceFailure{
+				Symbol:    p.Instrument.Symbol,
+				Name:      p.Instrument.Name,
+				AssetType: p.Instrument.AssetType,
+				Reason:    res.failure,
+			})
+		}
+	}
+
+	snapshot.Summary.TotalPnL = snapshot.Summary.TotalValue - snapshot.Summary.TotalCost
+	if snapshot.Summary.TotalCost != 0 {
+		snapshot.Summary.PnLPct = snapshot.Summary.TotalPnL / snapshot.Summary.TotalCost
+	}
+
+	return snapshot, nil
+}
+
+func resolvePositionPrice(ctx context.Context, resolver PortfolioPriceResolver, position investment.Position) (float64, string, string) {
+	if resolver == nil {
+		return fallbackPositionPrice(position, "price_resolver_not_initialized")
+	}
+
+	candidates := quoteCodeCandidates(position.Instrument)
+	if len(candidates) == 0 {
+		return fallbackPositionPrice(position, "missing_symbol")
+	}
+
+	assetType := strings.ToLower(strings.TrimSpace(position.Instrument.AssetType))
+	failures := make([]string, 0, len(candidates))
+	for _, code := range candidates {
+		switch {
+		case strings.Contains(assetType, "stock"), strings.Contains(assetType, "股票"):
+			price, err := resolver.ResolveStockPrice(ctx, code)
+			if err == nil && price > 0 {
+				return price, portfolioPriceSourceRealtime, ""
+			}
+			failures = append(failures, fmt.Sprintf("%s=>%s", code, quoteErrorMessage("stock", err)))
+		case strings.Contains(assetType, "fund"), strings.Contains(assetType, "基金"):
+			price, err := resolver.ResolveFundPrice(ctx, code)
+			if err == nil && price > 0 {
+				return price, portfolioPriceSourceRealtime, ""
+			}
+			failures = append(failures, fmt.Sprintf("%s=>%s", code, quoteErrorMessage("fund", err)))
+		default:
+			stockPrice, stockErr := resolver.ResolveStockPrice(ctx, code)
+			if stockErr == nil && stockPrice > 0 {
+				return stockPrice, portfolioPriceSourceRealtime, ""
+			}
+			fundPrice, fundErr := resolver.ResolveFundPrice(ctx, code)
+			if fundErr == nil && fundPrice > 0 {
+				return fundPrice, portfolioPriceSourceRealtime, ""
+			}
+			failures = append(failures, fmt.Sprintf("%s=>%s", code, joinQuoteErrors(
+				quoteErrorMessage("stock", stockErr),
+				quoteErrorMessage("fund", fundErr),
+			)))
+		}
+	}
+	return fallbackPositionPrice(position, buildQuoteFailure(candidates, failures))
+}
+
+func fallbackPositionPrice(position investment.Position, failure string) (float64, string, string) {
+	if position.MarketPrice != nil && *position.MarketPrice > 0 {
+		return *position.MarketPrice, portfolioPriceSourceStored, strings.TrimSpace(failure)
+	}
+	return position.AvgCost, portfolioPriceSourceAvgCost, strings.TrimSpace(failure)
+}
+
+func quoteErrorMessage(prefix string, err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	if msg == "" {
+		return ""
+	}
+	if prefix == "" {
+		return msg
+	}
+	return prefix + "_quote_failed: " + msg
+}
+
+func joinQuoteErrors(messages ...string) string {
+	out := make([]string, 0, len(messages))
+	for _, msg := range messages {
+		trimmed := strings.TrimSpace(msg)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return strings.Join(out, "; ")
+}
+
+func (r defaultPortfolioPriceResolver) ResolveStockPrice(ctx context.Context, symbol string) (float64, error) {
+	result, err := r.marketData.Execute(ctx, map[string]interface{}{
+		"action": "get_stock_intraday",
+		"code":   strings.TrimSpace(symbol),
+	})
+	if err != nil {
+		return 0, err
+	}
+	if strings.TrimSpace(result.Error) != "" {
+		return 0, errors.New(result.Error)
+	}
+	return parseStockIntradayPrice(result.Output)
+}
+
+func (r defaultPortfolioPriceResolver) ResolveFundPrice(ctx context.Context, symbol string) (float64, error) {
+	result, err := r.marketData.Execute(ctx, map[string]interface{}{
+		"action": "get_fund_intraday",
+		"code":   strings.TrimSpace(symbol),
+	})
+	if err != nil {
+		return 0, err
+	}
+	if strings.TrimSpace(result.Error) != "" {
+		return 0, errors.New(result.Error)
+	}
+	return parseFundIntradayPrice(result.Output)
+}
+
+func parseFundIntradayPrice(output interface{}) (float64, error) {
+	switch points := output.(type) {
+	case []IntradayPoint:
+		return pickLastPositiveIntradayPrice(points)
+	}
+
+	raw, err := json.Marshal(output)
+	if err != nil {
+		return 0, err
+	}
+	var decoded []IntradayPoint
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return 0, err
+	}
+	return pickLastPositiveIntradayPrice(decoded)
+}
+
+func parseStockIntradayPrice(output interface{}) (float64, error) {
+	switch points := output.(type) {
+	case []IntradayPoint:
+		return pickLastPositiveIntradayPrice(points)
+	}
+
+	raw, err := json.Marshal(output)
+	if err != nil {
+		return 0, err
+	}
+	var decoded []IntradayPoint
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return 0, err
+	}
+	return pickLastPositiveIntradayPrice(decoded)
+}
+
+func pickLastPositiveIntradayPrice(points []IntradayPoint) (float64, error) {
+	for i := len(points) - 1; i >= 0; i-- {
+		if points[i].Price > 0 {
+			return points[i].Price, nil
+		}
+	}
+	return 0, errors.New("empty_intraday_price")
+}
+
+func quoteCodeCandidates(instrument investment.Instrument) []string {
+	candidates := make([]string, 0, 2)
+	seen := map[string]struct{}{}
+	add := func(code string) {
+		trimmed := strings.TrimSpace(code)
+		if trimmed == "" {
+			return
+		}
+		key := strings.ToUpper(trimmed)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, trimmed)
+	}
+
+	add(instrument.Symbol)
+	name := strings.TrimSpace(instrument.Name)
+	if looksLikeQuoteCode(name) {
+		add(name)
+	}
+	return candidates
+}
+
+func buildQuoteFailure(candidates []string, failures []string) string {
+	list := strings.Join(candidates, ",")
+	if len(failures) == 0 {
+		return "quote_candidates=" + list + "; quote_failed"
+	}
+	return "quote_candidates=" + list + "; " + strings.Join(failures, " | ")
+}
+
+func normalizeInstrumentIdentity(symbol string, name string) (string, string) {
+	normalizedSymbol := strings.TrimSpace(symbol)
+	normalizedName := strings.TrimSpace(name)
+	if !looksLikeQuoteCode(normalizedSymbol) && looksLikeQuoteCode(normalizedName) {
+		return normalizedName, normalizedSymbol
+	}
+	return normalizedSymbol, normalizedName
+}
+
+func looksLikeQuoteCode(value string) bool {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	if normalized == "" {
+		return false
+	}
+	if len(normalized) == 6 && isAllDigits(normalized) {
+		return true
+	}
+	if len(normalized) == 8 {
+		prefix := normalized[:2]
+		if (prefix == "SH" || prefix == "SZ" || prefix == "BJ") && isAllDigits(normalized[2:]) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAllDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, ch := range value {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func resolveUserID(ctx context.Context, svc *investment.Service, args map[string]interface{}) (int64, error) {

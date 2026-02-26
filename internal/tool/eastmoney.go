@@ -791,9 +791,8 @@ type SearchItem struct {
 }
 
 type eastmoneySearchResp struct {
-	Quota []interface{}         `json:"Quota"`
-	Data  []eastmoneySearchItem `json:"Data"`
-	Total int                   `json:"Total"`
+	Datas json.RawMessage `json:"Datas"`
+	Data  json.RawMessage `json:"Data"`
 }
 
 type eastmoneySearchItem struct {
@@ -805,65 +804,205 @@ type eastmoneySearchItem struct {
 	Market string `json:"MktNum"`
 }
 
-// SearchInstruments 搜索股票和基金
+type eastmoneySearchAltItem struct {
+	Code      string `json:"Code"`
+	Name      string `json:"Name"`
+	ShortName string `json:"ShortName"`
+	FCode     string `json:"FCode"`
+}
+
+// SearchInstruments 使用东方财富基金搜索接口进行模糊匹配
 func (t EastMoneyTool) SearchInstruments(ctx context.Context, query string, limit int) ([]SearchItem, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []SearchItem{}, nil
+	}
 	if limit <= 0 {
 		limit = 20
 	}
-	endpoint := "https://searchapi.eastmoney.com/bussiness/web/QuotationLabelSearch"
+
+	endpoint := "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx"
 	params := url.Values{}
-	params.Set("keyword", query)
-	params.Set("pagesize", fmt.Sprintf("%d", limit))
-	params.Set("type", "stock,fund") // 同时搜索股票和基金
-	params.Set("pi", "1")
-	params.Set("token", "D43BF722C8E33BDC906FB84D85E326E8")
-	params.Set("cb", "")
+	params.Set("m", "1")
+	params.Set("key", query)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+params.Encode(), nil)
+	targetURL := endpoint + "?" + params.Encode()
+	client := eastMoneyUTLSClientFromOptions(t.options)
+	log.Printf("[eastmoney] search_instruments backend=utls endpoint=%s", eastmoneyEndpointLabel(endpoint))
+	body, err := client.GetWithContext(ctx, targetURL)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
-	req.Header.Set("Referer", "https://quote.eastmoney.com/")
+	return parseFundSearchResponse(body, limit)
+}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	// 处理 JSONP 响应
-	raw := strings.TrimSpace(string(body))
-	// 移除 JSONP 回调包装
-	if strings.HasPrefix(raw, "(") && strings.HasSuffix(raw, ")") {
-		raw = raw[1 : len(raw)-1]
+func parseFundSearchResponse(body []byte, limit int) ([]SearchItem, error) {
+	raw := unwrapJSONP(body)
+	if len(raw) == 0 {
+		return []SearchItem{}, nil
 	}
 
 	var parsed eastmoneySearchResp
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return nil, err
 	}
 
-	items := make([]SearchItem, 0, len(parsed.Data))
-	for _, d := range parsed.Data {
-		item := SearchItem{
-			Code: d.Code,
-			Name: d.Name,
+	items := make([]SearchItem, 0, limit)
+	seen := make(map[string]struct{})
+	appendItem := func(code, name string) bool {
+		code = strings.TrimSpace(code)
+		name = strings.TrimSpace(name)
+		if code == "" || name == "" {
+			return false
 		}
-		// 判断类型
-		if strings.Contains(strings.ToLower(d.Type), "fund") || len(d.Code) == 6 && (strings.HasPrefix(d.Code, "0") || strings.HasPrefix(d.Code, "1") || strings.HasPrefix(d.Code, "2") || strings.HasPrefix(d.Code, "3") || strings.HasPrefix(d.Code, "5")) {
-			item.Type = "fund"
-		} else {
-			item.Type = "stock"
+		if _, ok := seen[code]; ok {
+			return false
 		}
-		items = append(items, item)
+		seen[code] = struct{}{}
+		items = append(items, SearchItem{
+			Code: code,
+			Name: name,
+			Type: "fund",
+		})
+		return true
 	}
 
+	for _, row := range collectFundSearchRows(parsed.Datas) {
+		code, name, ok := parseFundSearchDataRow(row)
+		if !ok {
+			continue
+		}
+		if appendItem(code, name) && len(items) >= limit {
+			return items, nil
+		}
+	}
+
+	for _, row := range collectFundSearchRows(parsed.Data) {
+		code, name, ok := parseFundSearchDataRow(row)
+		if !ok {
+			continue
+		}
+		if appendItem(code, name) && len(items) >= limit {
+			return items, nil
+		}
+	}
 	return items, nil
+}
+
+func collectFundSearchRows(raw json.RawMessage) []json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+
+	if trimmed[0] == '[' {
+		var rows []json.RawMessage
+		if err := json.Unmarshal(trimmed, &rows); err == nil {
+			return rows
+		}
+		return nil
+	}
+
+	if trimmed[0] == '{' {
+		// 有些返回会把结果按 key 组织成对象，这里转成行列表继续复用解析器。
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &obj); err == nil {
+			rows := make([]json.RawMessage, 0, len(obj))
+			for _, v := range obj {
+				rows = append(rows, v)
+			}
+			return rows
+		}
+	}
+
+	return []json.RawMessage{trimmed}
+}
+
+func unwrapJSONP(body []byte) []byte {
+	raw := strings.TrimSpace(string(body))
+	if raw == "" {
+		return nil
+	}
+	if strings.HasPrefix(raw, "(") && strings.HasSuffix(raw, ")") {
+		return []byte(strings.TrimSpace(raw[1 : len(raw)-1]))
+	}
+	if open := strings.IndexByte(raw, '('); open > 0 && strings.HasSuffix(raw, ")") {
+		candidate := strings.TrimSpace(raw[open+1 : len(raw)-1])
+		if json.Valid([]byte(candidate)) {
+			return []byte(candidate)
+		}
+	}
+	return []byte(raw)
+}
+
+func parseFundSearchDataLine(line string) (string, string, bool) {
+	parts := strings.Split(strings.TrimSpace(line), ",")
+	if len(parts) < 2 {
+		return "", "", false
+	}
+	code := strings.TrimSpace(parts[0])
+	name := strings.TrimSpace(parts[1])
+	if code == "" || name == "" {
+		return "", "", false
+	}
+	return code, name, true
+}
+
+func parseFundSearchDataRow(row json.RawMessage) (string, string, bool) {
+	if len(row) == 0 {
+		return "", "", false
+	}
+
+	var s string
+	if err := json.Unmarshal(row, &s); err == nil {
+		return parseFundSearchDataLine(s)
+	}
+
+	var item eastmoneySearchAltItem
+	if err := json.Unmarshal(row, &item); err == nil {
+		code := strings.TrimSpace(item.Code)
+		if code == "" {
+			code = strings.TrimSpace(item.FCode)
+		}
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			name = strings.TrimSpace(item.ShortName)
+		}
+		if code != "" && name != "" {
+			return code, name, true
+		}
+	}
+
+	var generic map[string]interface{}
+	if err := json.Unmarshal(row, &generic); err != nil {
+		return "", "", false
+	}
+	code := firstNonEmptyString(generic, "Code", "CODE", "code", "FCode", "FCODE", "fcode")
+	name := firstNonEmptyString(generic, "Name", "NAME", "name", "ShortName", "SHORTNAME", "short_name", "shortname")
+	if code == "" || name == "" {
+		return "", "", false
+	}
+	return code, name, true
+}
+
+func firstNonEmptyString(m map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		v, ok := m[key]
+		if !ok || v == nil {
+			continue
+		}
+		switch value := v.(type) {
+		case string:
+			s := strings.TrimSpace(value)
+			if s != "" {
+				return s
+			}
+		case fmt.Stringer:
+			s := strings.TrimSpace(value.String())
+			if s != "" {
+				return s
+			}
+		}
+	}
+	return ""
 }
