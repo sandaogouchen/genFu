@@ -37,6 +37,8 @@ import (
 	"genFu/internal/news"
 	"genFu/internal/router"
 	"genFu/internal/rsshub"
+	"genFu/internal/ruleengine"
+	"genFu/internal/ruleengine/strategies"
 	"genFu/internal/server"
 	stockpicker "genFu/internal/stockpicker"
 	"genFu/internal/tool"
@@ -350,6 +352,37 @@ func main() {
 		} else {
 			log.Printf("新闻分析流水线已启动")
 		}
+	}
+
+	// Rule Engine initialization (if enabled)
+	if appConfig.RuleEngine.Enabled {
+		ruleStore := ruleengine.NewSQLiteRuleStore(database)
+		posTracker := ruleengine.NewSQLitePositionTracker(database)
+
+		reStrategies := []ruleengine.StrategyEvaluator{
+			&strategies.FixedPctSL{},
+			&strategies.TrailingSL{},
+			&strategies.ATRSL{},
+			&strategies.DailyDropSL{},
+			&strategies.FixedPctTP{},
+			&strategies.TrailingTP{},
+			&strategies.PartialTP{},
+		}
+
+		engine := ruleengine.NewEngine(ruleStore, posTracker, reStrategies)
+
+		// Register RuleEngine tool
+		reTool := tool.NewRuleEngineTool(engine, ruleStore)
+		_ = reTool // TODO: register with tool registry
+
+		// Start monitor
+		monitor := ruleengine.NewMonitor(engine, posTracker, ruleStore,
+			ruleengine.WithAccountID(0), // default account
+		)
+		go monitor.Start(context.Background())
+		defer monitor.Stop()
+
+		log.Println("[RuleEngine] Started with", len(reStrategies), "strategies")
 	}
 
 	stockWF, err := workflow.NewStockWorkflow(context.Background(), chatModel, registry, investmentRepo, appConfig.RSSHub.Routes)
