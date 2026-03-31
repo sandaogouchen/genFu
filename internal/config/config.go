@@ -136,23 +136,24 @@ type RuleEngineConfig struct {
 }
 
 type NormalizedConfig struct {
-	Server    ServerConfig
-	PG        NormalizedPGConfig
-	LLM       NormalizedLLMConfig
-	Embedding NormalizedEmbeddingConfig
-	EastMoney NormalizedEastMoneyConfig
-	Tushare   struct {
+	Server     ServerConfig
+	PG         NormalizedPGConfig
+	LLM        NormalizedLLMConfig
+	Embedding  NormalizedEmbeddingConfig
+	EastMoney  NormalizedEastMoneyConfig
+	Tushare    struct {
 		Token      string
 		BaseURL    string
 		Timeout    time.Duration
 		MaxRetries int
 		RateLimit  int
 	}
-	RSSHub   NormalizedRSSHubConfig
-	News     NormalizedNewsConfig
-	Decision NormalizedDecisionConfig
-	NextOpen NormalizedNextOpenConfig
-	Access   NormalizedAccessConfig
+	RSSHub     NormalizedRSSHubConfig
+	News       NormalizedNewsConfig
+	Decision   NormalizedDecisionConfig
+	NextOpen   NormalizedNextOpenConfig
+	Access     NormalizedAccessConfig
+	RuleEngine RuleEngineConfig
 }
 
 type NormalizedPGConfig struct {
@@ -318,6 +319,7 @@ func normalize(cfg AppConfig) (NormalizedConfig, error) {
 			APIKeys:    cfg.Access.APIKeys,
 			AllowPaths: cfg.Access.AllowPaths,
 		},
+		RuleEngine: cfg.RuleEngine,
 	}
 	if result.Server.Port == 0 {
 		result.Server.Port = 8080
