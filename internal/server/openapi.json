@@ -45,7 +45,7 @@
     "/api/chat": {
       "post": {
         "summary": "Chat (SSE default)",
-        "description": "text/event-stream with chat events",
+        "description": "text/event-stream with chat events (includes `intent` event before content events)",
         "requestBody": {
           "required": true,
           "content": {
@@ -73,7 +73,7 @@
     "/sse/chat": {
       "post": {
         "summary": "Chat (SSE)",
-        "description": "text/event-stream with chat events",
+        "description": "text/event-stream with chat events (includes `intent` event before content events)",
         "requestBody": {
           "required": true,
           "content": {
@@ -190,6 +190,36 @@
         }
       }
     },
+    "/api/operation-guides": {
+      "get": {
+        "summary": "List operation guides by symbol",
+        "parameters": [
+          {
+            "name": "symbol",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Operation guide list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OperationGuide"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sse/analyze": {
       "post": {
         "summary": "Analyze fund or stock (SSE)",
@@ -248,7 +278,7 @@
     "/sse/decision": {
       "post": {
         "summary": "Trade decision (SSE)",
-        "description": "text/event-stream with decision and execution events",
+        "description": "text/event-stream with decision, risk budget, planning, guard, execution and review events",
         "requestBody": {
           "required": true,
           "content": {
@@ -303,7 +333,7 @@
     "/sse/workflow/stock": {
       "post": {
         "summary": "Stock/Fund workflow (SSE)",
-        "description": "text/event-stream with workflow events",
+        "description": "text/event-stream with workflow events (plan, node_start, node_delta, node_complete, node_skip, and node payload events)",
         "requestBody": {
           "required": true,
           "content": {
@@ -496,11 +526,26 @@
               "format": "int64"
             }
           },
+          "guide_selections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuideSelection"
+            }
+          },
           "meta": {
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "session_title": {
+            "type": "string"
+          },
+          "prompt": {
+            "type": "string"
           }
         }
       },
@@ -530,6 +575,96 @@
             "items": {
               "$ref": "#/components/schemas/ToolResult"
             }
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "risk_budget": {
+            "$ref": "#/components/schemas/RiskBudget"
+          },
+          "planned_orders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlannedOrder"
+            }
+          },
+          "guarded_orders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GuardedOrder"
+            }
+          },
+          "review": {
+            "$ref": "#/components/schemas/PostTradeReview"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RiskBudget": {
+        "type": "object",
+        "properties": {
+          "max_single_order_ratio": { "type": "number" },
+          "max_symbol_exposure_ratio": { "type": "number" },
+          "max_daily_trade_ratio": { "type": "number" },
+          "min_confidence": { "type": "number" }
+        }
+      },
+      "PlannedOrder": {
+        "type": "object",
+        "properties": {
+          "order_id": { "type": "string" },
+          "account_id": { "type": "integer", "format": "int64" },
+          "symbol": { "type": "string" },
+          "name": { "type": "string" },
+          "asset_type": { "type": "string" },
+          "action": { "type": "string" },
+          "quantity": { "type": "number" },
+          "price": { "type": "number" },
+          "notional": { "type": "number" },
+          "confidence": { "type": "number" },
+          "decision_id": { "type": "string" },
+          "planning_reason": { "type": "string" }
+        }
+      },
+      "GuardedOrder": {
+        "allOf": [
+          { "$ref": "#/components/schemas/PlannedOrder" },
+          {
+            "type": "object",
+            "properties": {
+              "guard_status": { "type": "string" },
+              "guard_reason": { "type": "string" },
+              "execution_status": { "type": "string" },
+              "execution_error": { "type": "string" },
+              "trade_id": { "type": "integer", "format": "int64" }
+            }
+          }
+        ]
+      },
+      "ReviewAttribution": {
+        "type": "object",
+        "properties": {
+          "order_id": { "type": "string" },
+          "title": { "type": "string" },
+          "detail": { "type": "string" }
+        }
+      },
+      "PostTradeReview": {
+        "type": "object",
+        "properties": {
+          "summary": { "type": "string" },
+          "attributions": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ReviewAttribution" }
+          },
+          "learning_points": {
+            "type": "array",
+            "items": { "type": "string" }
           }
         }
       },
@@ -586,6 +721,50 @@
           "status": { "type": "string" }
         }
       },
+      "GuideSelection": {
+        "type": "object",
+        "properties": {
+          "symbol": { "type": "string" },
+          "guide_id": { "type": "integer", "format": "int64" }
+        },
+        "required": ["symbol", "guide_id"]
+      },
+      "OperationGuideCondition": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string" },
+          "description": { "type": "string" },
+          "value": { "type": "string" }
+        }
+      },
+      "OperationGuide": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "format": "int64" },
+          "symbol": { "type": "string" },
+          "pick_id": { "type": "string" },
+          "buy_conditions": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/OperationGuideCondition" }
+          },
+          "sell_conditions": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/OperationGuideCondition" }
+          },
+          "stop_loss": { "type": "string" },
+          "take_profit": { "type": "string" },
+          "risk_monitors": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "trade_guide_text": { "type": "string" },
+          "trade_guide_json": { "type": "string" },
+          "trade_guide_version": { "type": "string" },
+          "valid_until": { "type": "string" },
+          "created_at": { "type": "string" },
+          "updated_at": { "type": "string" }
+        }
+      },
       "ToolResult": {
         "type": "object",
         "properties": {
@@ -620,12 +799,33 @@
           }
         }
       },
+      "IntentEventPayload": {
+        "type": "object",
+        "properties": {
+          "intent": { "type": "string" },
+          "workflow": { "type": "string" },
+          "confidence": { "type": "number" },
+          "fallback": { "type": "boolean" }
+        }
+      },
+      "GenerateEvent": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string" },
+          "delta": { "type": "string" },
+          "message": { "$ref": "#/components/schemas/ChatMessage" },
+          "tool_result": { "$ref": "#/components/schemas/ToolResult" },
+          "intent": { "$ref": "#/components/schemas/IntentEventPayload" },
+          "done": { "type": "boolean" }
+        }
+      },
       "StockWorkflowInput": {
         "type": "object",
         "properties": {
           "account_id": { "type": "integer", "format": "int64" },
           "symbol": { "type": "string" },
           "name": { "type": "string" },
+          "asset_type": { "type": "string" },
           "stock_news_routes": { "type": "array", "items": { "type": "string" } },
           "industry_news_routes": { "type": "array", "items": { "type": "string" } },
           "news_limit": { "type": "integer" }
@@ -637,6 +837,7 @@
         "properties": {
           "symbol": { "type": "string" },
           "name": { "type": "string" },
+          "asset_type": { "type": "string" },
           "quantity": { "type": "number" },
           "avg_cost": { "type": "number" },
           "market_price": { "type": "number" },
@@ -666,6 +867,7 @@
       "NewsSummaryOutput": {
         "type": "object",
         "properties": {
+          "items": { "type": "array", "items": { "type": "object" } },
           "summary": { "type": "string" },
           "sentiment": { "type": "string" }
         }

@@ -836,6 +836,34 @@ func (t EastMoneyTool) SearchInstruments(ctx context.Context, query string, limi
 	return parseFundSearchResponse(body, limit)
 }
 
+// SearchStockByCode 按股票代码搜索并返回单条结果
+func (t EastMoneyTool) SearchStockByCode(ctx context.Context, code string) (*SearchItem, error) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return nil, nil
+	}
+	quote, err := fetchStockQuote(withEastMoneyOptions(ctx, t.options), code)
+	if err != nil {
+		return nil, err
+	}
+	symbol := strings.TrimSpace(quote.Code)
+	if symbol == "" {
+		symbol = code
+	}
+	name := strings.TrimSpace(quote.Name)
+	if name == "" {
+		name = symbol
+	}
+	return &SearchItem{
+		Code:      symbol,
+		Name:      name,
+		Type:      "stock",
+		Price:     quote.Price,
+		Change:    quote.Change,
+		ChangePct: quote.ChangeRate,
+	}, nil
+}
+
 func parseFundSearchResponse(body []byte, limit int) ([]SearchItem, error) {
 	raw := unwrapJSONP(body)
 	if len(raw) == 0 {

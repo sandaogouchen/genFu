@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -65,6 +67,11 @@ type MarketDataTool struct {
 	investmentSvc *investment.Service
 }
 
+var (
+	fundRequestRetryTimes     = 3
+	fundRequestRetryBaseDelay = 200 * time.Millisecond
+)
+
 func NewMarketDataTool(svc *investment.Service) MarketDataTool {
 	return MarketDataTool{investmentSvc: svc}
 }
@@ -72,9 +79,9 @@ func NewMarketDataTool(svc *investment.Service) MarketDataTool {
 func (t MarketDataTool) Spec() ToolSpec {
 	return ToolSpec{
 		Name:        "marketdata",
-		Description: "fetch stock and fund intraday or kline data",
+		Description: "fetch stock and fund intraday or kline data; action must be one of get_stock_kline, get_stock_intraday, get_fund_kline, get_fund_intraday, get_fund_holdings_kline, get_fund_holdings_intraday",
 		Params: map[string]string{
-			"action":     "string",
+			"action":     "required; one of get_stock_kline|get_stock_intraday|get_fund_kline|get_fund_intraday|get_fund_holdings_kline|get_fund_holdings_intraday",
 			"code":       "string",
 			"symbol":     "string",
 			"period":     "string",
@@ -95,7 +102,7 @@ func (t MarketDataTool) Execute(ctx context.Context, args map[string]interface{}
 	if err != nil {
 		return ToolResult{Name: "marketdata", Error: err.Error()}, err
 	}
-	switch strings.ToLower(strings.TrimSpace(action)) {
+	switch normalizeMarketDataAction(args, action) {
 	case "get_stock_kline":
 		code, err := requireCode(args)
 		if err != nil {
@@ -160,6 +167,86 @@ func (t MarketDataTool) Execute(ctx context.Context, args map[string]interface{}
 	default:
 		return ToolResult{Name: "marketdata", Error: "unsupported_action"}, errors.New("unsupported_action")
 	}
+}
+
+func normalizeMarketDataAction(args map[string]interface{}, rawAction string) string {
+	action := strings.ToLower(strings.TrimSpace(rawAction))
+	if action == "" {
+		return action
+	}
+
+	switch action {
+	case "get_stock_kline",
+		"get_stock_intraday",
+		"get_fund_kline",
+		"get_fund_intraday",
+		"get_fund_holdings_kline",
+		"get_fund_holdings_intraday":
+		return action
+	case "get_kline_data_fund",
+		"get_kline_data_fund_daily",
+		"get_fund_kline_daily":
+		return "get_fund_kline"
+	case "get_intraday_data_fund",
+		"get_fund_realtime":
+		return "get_fund_intraday"
+	}
+
+	if strings.HasPrefix(action, "get_kline_data_fund_daily_") {
+		injectCodeFromAction(args, strings.TrimPrefix(action, "get_kline_data_fund_daily_"))
+		return "get_fund_kline"
+	}
+	if strings.HasPrefix(action, "get_kline_data_fund_") {
+		injectCodeFromAction(args, strings.TrimPrefix(action, "get_kline_data_fund_"))
+		return "get_fund_kline"
+	}
+	if strings.HasPrefix(action, "get_fund_kline_") {
+		injectCodeFromAction(args, strings.TrimPrefix(action, "get_fund_kline_"))
+		return "get_fund_kline"
+	}
+	if strings.HasPrefix(action, "get_intraday_data_fund_") {
+		injectCodeFromAction(args, strings.TrimPrefix(action, "get_intraday_data_fund_"))
+		return "get_fund_intraday"
+	}
+	if strings.HasPrefix(action, "get_fund_intraday_") {
+		injectCodeFromAction(args, strings.TrimPrefix(action, "get_fund_intraday_"))
+		return "get_fund_intraday"
+	}
+
+	return action
+}
+
+func injectCodeFromAction(args map[string]interface{}, rawCode string) {
+	if args == nil {
+		return
+	}
+	if strings.TrimSpace(optionalString(args, "code")) != "" || strings.TrimSpace(optionalString(args, "symbol")) != "" {
+		return
+	}
+	code := strings.Trim(strings.TrimSpace(rawCode), "_")
+	if !looksLikeInstrumentCode(code) {
+		return
+	}
+	args["code"] = code
+}
+
+func looksLikeInstrumentCode(code string) bool {
+	if code == "" {
+		return false
+	}
+	if len(code) < 4 || len(code) > 12 {
+		return false
+	}
+	for _, ch := range code {
+		if (ch >= '0' && ch <= '9') ||
+			(ch >= 'a' && ch <= 'z') ||
+			(ch >= 'A' && ch <= 'Z') ||
+			ch == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func requireCode(args map[string]interface{}) (string, error) {
@@ -537,11 +624,11 @@ func fetchFundRealtime(ctx context.Context, code string) ([]IntradayPoint, error
 	endpoint := "https://fundgz.1234567.com.cn/js/" + clean + ".js"
 	body, err := doFundRequest(ctx, endpoint)
 	if err != nil {
-		return nil, err
+		return fetchFundRealtimeFallback(ctx, clean, err)
 	}
 	nav, err := parseFundRealtime(body)
 	if err != nil {
-		return nil, err
+		return fetchFundRealtimeFallback(ctx, clean, err)
 	}
 	price := parseNumber(nav.Estimate)
 	avg := parseNumber(nav.UnitNAV)
@@ -557,9 +644,55 @@ func fetchFundRealtime(ctx context.Context, code string) ([]IntradayPoint, error
 		point.Time = strings.TrimSpace(nav.Date)
 	}
 	if point.Price == 0 {
-		return nil, errors.New("empty_response")
+		return fetchFundRealtimeFallback(ctx, clean, errors.New("empty_response"))
 	}
 	return []IntradayPoint{point}, nil
+}
+
+func fetchFundRealtimeFallback(ctx context.Context, code string, baseErr error) ([]IntradayPoint, error) {
+	points, err := fetchFundRealtimeFromHistory(ctx, code)
+	if err == nil {
+		return points, nil
+	}
+	if baseErr != nil {
+		return nil, baseErr
+	}
+	return nil, err
+}
+
+func fetchFundRealtimeFromHistory(ctx context.Context, code string) ([]IntradayPoint, error) {
+	now := time.Now()
+	start := now.AddDate(0, 0, -30).Format("2006-01-02")
+	end := now.Format("2006-01-02")
+	points, _, err := fetchFundHistoryPage(ctx, code, start, end, 1, 50)
+	if err != nil {
+		return nil, err
+	}
+	latest, ok := pickLatestFundNAVPoint(points)
+	if !ok || latest.UnitNAV <= 0 {
+		return nil, errors.New("empty_response")
+	}
+	ts := strings.TrimSpace(latest.Date)
+	return []IntradayPoint{
+		{
+			Time:     ts,
+			Price:    latest.UnitNAV,
+			AvgPrice: latest.UnitNAV,
+		},
+	}, nil
+}
+
+func pickLatestFundNAVPoint(points []FundNAVPoint) (FundNAVPoint, bool) {
+	if len(points) == 0 {
+		return FundNAVPoint{}, false
+	}
+	latest := points[0]
+	for _, point := range points[1:] {
+		if strings.TrimSpace(point.Date) > strings.TrimSpace(latest.Date) {
+			latest = point
+		}
+	}
+	return latest, true
 }
 
 func parseFundHistoryResponse(body []byte) ([]FundNAVPoint, int, error) {
@@ -773,21 +906,93 @@ func parseFundRealtime(body []byte) (FundRealtimeNAV, error) {
 }
 
 func doFundRequest(ctx context.Context, endpoint string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0")
+	retries := fundRequestRetryTimes
+	if retries <= 0 {
+		retries = 1
+	}
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for attempt := 1; attempt <= retries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+		} else {
+			body, reqErr := readFundResponse(resp)
+			if reqErr == nil {
+				return body, nil
+			}
+			lastErr = reqErr
+		}
+
+		if attempt >= retries || !shouldRetryFundRequest(lastErr) {
+			return nil, lastErr
+		}
+		wait := fundRequestRetryBaseDelay * time.Duration(attempt)
+		if wait <= 0 {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	return nil, lastErr
+}
+
+func readFundResponse(resp *http.Response) ([]byte, error) {
+	if resp == nil {
+		return nil, errors.New("empty_response")
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 500 {
+		return nil, fmt.Errorf("fund_http_%d", resp.StatusCode)
+	}
 	if resp.StatusCode >= 400 {
 		return nil, errors.New("fund_request_failed")
 	}
-	return io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) == 0 {
+		return nil, errors.New("empty_response")
+	}
+	return body, nil
+}
+
+func shouldRetryFundRequest(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.HasPrefix(msg, "fund_http_5"),
+		strings.Contains(msg, "timeout"),
+		strings.Contains(msg, "connection reset"),
+		strings.Contains(msg, "connection refused"),
+		strings.Contains(msg, "temporar"),
+		strings.Contains(msg, "no such host"):
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeFundDate(value string, fallback time.Time) string {

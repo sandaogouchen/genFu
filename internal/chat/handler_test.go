@@ -74,6 +74,9 @@ func TestChatHandler(t *testing.T) {
 	if !strings.Contains(raw, "event: session") {
 		t.Fatalf("missing session event")
 	}
+	if !strings.Contains(raw, "event: intent") {
+		t.Fatalf("missing intent event")
+	}
 	if !strings.Contains(raw, "event: done") {
 		t.Fatalf("missing done event")
 	}
@@ -82,8 +85,6 @@ func TestChatHandler(t *testing.T) {
 func TestChatSSEHandler(t *testing.T) {
 	service := newTestService(t)
 	handler := NewSSEHandler(service)
-	srv := httptest.NewServer(handler)
-	defer srv.Close()
 	reqBody, err := json.Marshal(generate.GenerateRequest{
 		SessionID: "s",
 		Messages:  []message.Message{{Role: message.RoleUser, Content: "hi"}},
@@ -91,22 +92,21 @@ func TestChatSSEHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, srv.URL, bytes.NewReader(reqBody))
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("do: %v", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	req := httptest.NewRequest(http.MethodPost, "/sse/chat", bytes.NewReader(reqBody))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	res := rec.Result()
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
 	raw := string(body)
 	if !strings.Contains(raw, "event: session") {
 		t.Fatalf("missing session event")
+	}
+	if !strings.Contains(raw, "event: intent") {
+		t.Fatalf("missing intent event")
 	}
 	if !strings.Contains(raw, "event: done") {
 		t.Fatalf("missing done event")

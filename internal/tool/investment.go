@@ -14,15 +14,20 @@ import (
 )
 
 type InvestmentTool struct {
-	svc           *investment.Service
-	eastMoney     EastMoneyTool
-	marketData    MarketDataTool
-	priceResolver PortfolioPriceResolver
+	svc              *investment.Service
+	instrumentSearch instrumentSearchProvider
+	marketData       MarketDataTool
+	priceResolver    PortfolioPriceResolver
 }
 
 type PortfolioPriceResolver interface {
 	ResolveStockPrice(ctx context.Context, symbol string) (float64, error)
 	ResolveFundPrice(ctx context.Context, symbol string) (float64, error)
+}
+
+type instrumentSearchProvider interface {
+	SearchInstruments(ctx context.Context, query string, limit int) ([]SearchItem, error)
+	SearchStockByCode(ctx context.Context, code string) (*SearchItem, error)
 }
 
 type marketDataExecutor interface {
@@ -49,20 +54,21 @@ type PortfolioSnapshotPriceFailure struct {
 }
 
 type PortfolioSnapshotPosition struct {
-	ID           int64                 `json:"id"`
-	AccountID    int64                 `json:"account_id"`
-	Instrument   investment.Instrument `json:"instrument"`
-	Quantity     float64               `json:"quantity"`
-	AvgCost      float64               `json:"avg_cost"`
-	MarketPrice  *float64              `json:"market_price,omitempty"`
-	CurrentPrice float64               `json:"current_price"`
-	PriceSource  string                `json:"price_source"`
-	Cost         float64               `json:"cost"`
-	MarketValue  float64               `json:"market_value"`
-	PnL          float64               `json:"pnl"`
-	PnLPct       float64               `json:"pnl_pct"`
-	CreatedAt    time.Time             `json:"created_at"`
-	UpdatedAt    time.Time             `json:"updated_at"`
+	ID               int64                 `json:"id"`
+	AccountID        int64                 `json:"account_id"`
+	Instrument       investment.Instrument `json:"instrument"`
+	Quantity         float64               `json:"quantity"`
+	AvgCost          float64               `json:"avg_cost"`
+	MarketPrice      *float64              `json:"market_price,omitempty"`
+	OperationGuideID *int64                `json:"operation_guide_id,omitempty"`
+	CurrentPrice     float64               `json:"current_price"`
+	PriceSource      string                `json:"price_source"`
+	Cost             float64               `json:"cost"`
+	MarketValue      float64               `json:"market_value"`
+	PnL              float64               `json:"pnl"`
+	PnLPct           float64               `json:"pnl_pct"`
+	CreatedAt        time.Time             `json:"created_at"`
+	UpdatedAt        time.Time             `json:"updated_at"`
 }
 
 type PortfolioSnapshotSummary struct {
@@ -87,20 +93,23 @@ func NewInvestmentTool(svc *investment.Service) InvestmentTool {
 	return NewInvestmentToolWithEastMoney(svc, NewEastMoneyTool())
 }
 
-func NewInvestmentToolWithEastMoney(svc *investment.Service, eastMoney EastMoneyTool) InvestmentTool {
+func NewInvestmentToolWithEastMoney(svc *investment.Service, searchProvider instrumentSearchProvider) InvestmentTool {
 	marketData := NewMarketDataTool(svc)
-	return NewInvestmentToolWithResolver(svc, eastMoney, marketData, newDefaultPortfolioPriceResolver(marketData))
+	return NewInvestmentToolWithResolver(svc, searchProvider, marketData, newDefaultPortfolioPriceResolver(marketData))
 }
 
-func NewInvestmentToolWithResolver(svc *investment.Service, eastMoney EastMoneyTool, marketData MarketDataTool, resolver PortfolioPriceResolver) InvestmentTool {
+func NewInvestmentToolWithResolver(svc *investment.Service, searchProvider instrumentSearchProvider, marketData MarketDataTool, resolver PortfolioPriceResolver) InvestmentTool {
+	if searchProvider == nil {
+		searchProvider = NewEastMoneyTool()
+	}
 	if resolver == nil {
 		resolver = newDefaultPortfolioPriceResolver(marketData)
 	}
 	return InvestmentTool{
-		svc:           svc,
-		eastMoney:     eastMoney,
-		marketData:    marketData,
-		priceResolver: resolver,
+		svc:              svc,
+		instrumentSearch: searchProvider,
+		marketData:       marketData,
+		priceResolver:    resolver,
 	}
 }
 
@@ -398,22 +407,15 @@ func (t InvestmentTool) Execute(ctx context.Context, args map[string]interface{}
 			return ToolResult{Name: "investment", Error: err.Error()}, err
 		}
 		limit, _ := optionalInt(args, "limit")
-		externalResults, err := t.eastMoney.SearchInstruments(ctx, query, limit)
-		if err != nil {
-			return ToolResult{Name: "investment", Error: err.Error()}, err
+		if t.instrumentSearch == nil {
+			return ToolResult{Name: "investment", Error: "instrument_search_provider_not_initialized"}, errors.New("instrument_search_provider_not_initialized")
 		}
-		instruments := make([]map[string]interface{}, 0, len(externalResults))
-		for _, item := range externalResults {
-			record := map[string]interface{}{
-				"symbol":     item.Code,
-				"name":       item.Name,
-				"asset_type": "fund",
-			}
-			if item.Price > 0 {
-				record["price"] = item.Price
-			}
-			instruments = append(instruments, record)
+		fundResults, fundErr := t.instrumentSearch.SearchInstruments(ctx, query, limit)
+		stockResult := searchStockInstrumentByCode(ctx, t.instrumentSearch, query)
+		if fundErr != nil && stockResult == nil {
+			return ToolResult{Name: "investment", Error: fundErr.Error()}, fundErr
 		}
+		instruments := buildSearchInstrumentRecords(stockResult, fundResults, limit)
 		return ToolResult{Name: "investment", Output: instruments, Error: ""}, nil
 	case "add_position_by_value":
 		accountID, err := resolveAccountID(ctx, t.svc, args)
@@ -609,20 +611,21 @@ func (t InvestmentTool) GetPortfolioSnapshot(ctx context.Context, accountID int6
 		}
 
 		snapshot.Positions[i] = PortfolioSnapshotPosition{
-			ID:           p.ID,
-			AccountID:    p.AccountID,
-			Instrument:   p.Instrument,
-			Quantity:     p.Quantity,
-			AvgCost:      p.AvgCost,
-			MarketPrice:  p.MarketPrice,
-			CurrentPrice: res.price,
-			PriceSource:  res.source,
-			Cost:         cost,
-			MarketValue:  value,
-			PnL:          pnl,
-			PnLPct:       pnlPct,
-			CreatedAt:    p.CreatedAt,
-			UpdatedAt:    p.UpdatedAt,
+			ID:               p.ID,
+			AccountID:        p.AccountID,
+			Instrument:       p.Instrument,
+			Quantity:         p.Quantity,
+			AvgCost:          p.AvgCost,
+			MarketPrice:      p.MarketPrice,
+			OperationGuideID: p.OperationGuideID,
+			CurrentPrice:     res.price,
+			PriceSource:      res.source,
+			Cost:             cost,
+			MarketValue:      value,
+			PnL:              pnl,
+			PnLPct:           pnlPct,
+			CreatedAt:        p.CreatedAt,
+			UpdatedAt:        p.UpdatedAt,
 		}
 		snapshot.Summary.TotalCost += cost
 		snapshot.Summary.TotalValue += value
@@ -835,6 +838,153 @@ func normalizeInstrumentIdentity(symbol string, name string) (string, string) {
 		return normalizedName, normalizedSymbol
 	}
 	return normalizedSymbol, normalizedName
+}
+
+func searchStockInstrumentByCode(ctx context.Context, provider instrumentSearchProvider, query string) *SearchItem {
+	if provider == nil {
+		return nil
+	}
+	symbol := normalizeSearchSymbol(query)
+	if !looksLikeQuoteCode(symbol) {
+		return nil
+	}
+	item, err := provider.SearchStockByCode(ctx, symbol)
+	if err == nil && item != nil {
+		normalized, ok := normalizeSearchItem(*item, "stock")
+		if ok {
+			return &normalized
+		}
+	}
+	if looksLikeStrongStockCode(symbol) {
+		return &SearchItem{
+			Code: symbol,
+			Name: symbol,
+			Type: "stock",
+		}
+	}
+	return nil
+}
+
+func buildSearchInstrumentRecords(stock *SearchItem, funds []SearchItem, limit int) []map[string]interface{} {
+	if limit <= 0 {
+		limit = 20
+	}
+	items := make([]SearchItem, 0, len(funds)+1)
+	if stock != nil {
+		items = append(items, *stock)
+	}
+	for _, fund := range funds {
+		normalized, ok := normalizeSearchItem(fund, "fund")
+		if !ok {
+			continue
+		}
+		items = append(items, normalized)
+	}
+
+	records := make([]map[string]interface{}, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if len(records) >= limit {
+			break
+		}
+		normalized, ok := normalizeSearchItem(item, "")
+		if !ok {
+			continue
+		}
+		key := strings.ToUpper(normalized.Type + ":" + normalized.Code)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		record := map[string]interface{}{
+			"symbol":     normalized.Code,
+			"name":       normalized.Name,
+			"type":       normalized.Type,
+			"asset_type": normalized.Type,
+		}
+		if normalized.Price > 0 {
+			record["price"] = normalized.Price
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+func normalizeSearchItem(item SearchItem, defaultType string) (SearchItem, bool) {
+	normalizedType := normalizeSearchAssetType(item.Type)
+	if normalizedType == "unknown" {
+		normalizedType = normalizeSearchAssetType(defaultType)
+	}
+	if normalizedType == "unknown" {
+		return SearchItem{}, false
+	}
+	normalizedCode := normalizeSearchSymbol(item.Code)
+	if normalizedCode == "" {
+		return SearchItem{}, false
+	}
+	normalizedName := strings.TrimSpace(item.Name)
+	if normalizedName == "" {
+		normalizedName = normalizedCode
+	}
+	return SearchItem{
+		Code:      normalizedCode,
+		Name:      normalizedName,
+		Type:      normalizedType,
+		Price:     item.Price,
+		Change:    item.Change,
+		ChangePct: item.ChangePct,
+	}, true
+}
+
+func normalizeSearchAssetType(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "fund", "基金":
+		return "fund"
+	case "stock", "股票":
+		return "stock"
+	default:
+		return "unknown"
+	}
+}
+
+func normalizeSearchSymbol(value string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(value))
+	if len(normalized) == 8 {
+		prefix := normalized[:2]
+		if (prefix == "SH" || prefix == "SZ" || prefix == "BJ") && isAllDigits(normalized[2:]) {
+			return normalized[2:]
+		}
+	}
+	return normalized
+}
+
+func looksLikeStrongStockCode(value string) bool {
+	normalized := normalizeSearchSymbol(value)
+	if len(normalized) != 6 || !isAllDigits(normalized) {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(normalized, "000"),
+		strings.HasPrefix(normalized, "001"),
+		strings.HasPrefix(normalized, "002"),
+		strings.HasPrefix(normalized, "003"),
+		strings.HasPrefix(normalized, "200"),
+		strings.HasPrefix(normalized, "300"),
+		strings.HasPrefix(normalized, "301"),
+		strings.HasPrefix(normalized, "600"),
+		strings.HasPrefix(normalized, "601"),
+		strings.HasPrefix(normalized, "603"),
+		strings.HasPrefix(normalized, "605"),
+		strings.HasPrefix(normalized, "688"),
+		strings.HasPrefix(normalized, "689"),
+		strings.HasPrefix(normalized, "900"),
+		strings.HasPrefix(normalized, "8"),
+		strings.HasPrefix(normalized, "9"):
+		return true
+	default:
+		return false
+	}
 }
 
 func looksLikeQuoteCode(value string) bool {

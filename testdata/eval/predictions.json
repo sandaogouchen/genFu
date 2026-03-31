@@ -1,0 +1,60 @@
+[
+  {
+    "system": "single-agent",
+    "scenario_id": "rebalance-001",
+    "task_type": "rebalance",
+    "summary": "Reduce concentration.",
+    "risk_flags": ["concentration"],
+    "actions": [
+      {
+        "symbol": "600519",
+        "action": "reduce",
+        "target_ratio": 0.18,
+        "reasons": ["position too concentrated"]
+      }
+    ]
+  },
+  {
+    "system": "single-agent",
+    "scenario_id": "diagnose-001",
+    "task_type": "diagnose",
+    "summary": "Open a new position.",
+    "actions": [
+      {
+        "symbol": "159915",
+        "action": "open",
+        "target_ratio": 0.1,
+        "reasons": ["new opportunity found"]
+      }
+    ]
+  },
+  {
+    "system": "multi-agent",
+    "scenario_id": "rebalance-001",
+    "task_type": "rebalance",
+    "summary": "Reduce concentration and preserve flexibility.",
+    "risk_flags": ["concentration"],
+    "actions": [
+      {
+        "symbol": "600519",
+        "action": "reduce",
+        "target_ratio": 0.18,
+        "reasons": ["position too concentrated"]
+      }
+    ]
+  },
+  {
+    "system": "multi-agent",
+    "scenario_id": "diagnose-001",
+    "task_type": "diagnose",
+    "summary": "Keep watching the current holding.",
+    "actions": [
+      {
+        "symbol": "159915",
+        "action": "watch",
+        "target_ratio": 0,
+        "reasons": ["wait for more confirmation"]
+      }
+    ]
+  }
+]

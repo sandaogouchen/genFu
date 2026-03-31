@@ -14,15 +14,20 @@ import (
 type Handler struct {
 	service          *Service
 	guideRepo        *GuideRepository
+	runRepo          *RunRepository
 	conversationRepo *conversationlog.Repository
 }
 
 // NewHandler 创建处理器
 func NewHandler(service *Service, guideRepo *GuideRepository) *Handler {
-	return &Handler{
+	h := &Handler{
 		service:   service,
 		guideRepo: guideRepo,
 	}
+	if service != nil {
+		h.runRepo = service.runRepo
+	}
+	return h
 }
 
 func (h *Handler) SetConversationRepo(repo *conversationlog.Repository) {
@@ -139,4 +144,50 @@ func (h *Handler) GetOperationGuideByID(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(guide)
+}
+
+// ListOperationGuidesBySymbol 按标的代码返回历史指南
+// GET /api/operation-guides?symbol=600519
+func (h *Handler) ListOperationGuidesBySymbol(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	pickID := strings.TrimSpace(r.URL.Query().Get("pick_id"))
+	if pickID != "" {
+		guides, err := h.guideRepo.ListGuidesByPickID(r.Context(), pickID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		resp := map[string]interface{}{
+			"pick_id": pickID,
+			"guides":  guides,
+		}
+		if h.runRepo != nil {
+			record, err := h.runRepo.GetByPickID(r.Context(), pickID)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if record != nil {
+				resp["snapshot_summary"] = h.runRepo.BuildSummary(record)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+	symbol := strings.TrimSpace(r.URL.Query().Get("symbol"))
+	if symbol == "" {
+		http.Error(w, "missing symbol or pick_id", http.StatusBadRequest)
+		return
+	}
+	guides, err := h.guideRepo.ListGuidesBySymbol(r.Context(), symbol)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(guides)
 }

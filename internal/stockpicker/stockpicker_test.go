@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,30 @@ func (m *MockAgent) Name() string           { return "mock" }
 func (m *MockAgent) Capabilities() []string { return []string{"test"} }
 
 func (m *MockAgent) Handle(ctx context.Context, req generate.GenerateRequest) (generate.GenerateResponse, error) {
+	last := ""
+	if n := len(req.Messages); n > 0 {
+		last = req.Messages[n-1].Content
+	}
+	if strings.Contains(last, "识别当前市场状态") {
+		return generate.GenerateResponse{
+			Message: message.Message{Role: message.RoleAssistant, Content: `{"market_regime":"trend_up","regime_confidence":0.72,"regime_reasoning":"breadth strong","regime_signals":["up_count high","limit_up stable"]}`},
+		}, nil
+	}
+	if strings.Contains(last, "筛选策略") {
+		return generate.GenerateResponse{
+			Message: message.Message{Role: message.RoleAssistant, Content: `{"strategy_name":"technical_breakout","strategy_description":"技术突破","screening_conditions":{"strategy_type":"technical_breakout","limit":50},"market_context":"ok","risk_notes":"ok"}`},
+		}, nil
+	}
+	if strings.Contains(last, "组合约束重排") {
+		return generate.GenerateResponse{
+			Message: message.Message{Role: message.RoleAssistant, Content: `{"summary":"ok","stocks":[{"symbol":"600519","fit_score":0.8,"risk_budget_weight":0.15,"fit_reasons":["liquidity"],"hard_reject":false,"reject_reason":""}]}`},
+		}, nil
+	}
+	if strings.Contains(last, "编译交易规则") {
+		return generate.GenerateResponse{
+			Message: message.Message{Role: message.RoleAssistant, Content: `{"stocks":[{"symbol":"600519","trade_guide_text":"compiled","trade_guide_json_v2":"{\"schema_version\":\"v2\",\"asset_type\":\"stock\",\"symbol\":\"600519\",\"entries\":[],\"exits\":[],\"risk_controls\":{}}","trade_guide_json":"{\"asset_type\":\"stock\",\"symbol\":\"600519\",\"buy_rules\":[],\"sell_rules\":[],\"risk_controls\":{}}","trade_guide_version":"v2"}]}`},
+		}, nil
+	}
 	return generate.GenerateResponse{
 		Message: message.Message{
 			Role:    message.RoleAssistant,
@@ -211,7 +236,7 @@ func TestHandlerHTTP(t *testing.T) {
 	registry.Register(MockEastMoneyTool{})
 
 	// 创建服务
-	svc := NewService(mockAgent, mockAgent, registry, provider, nil)
+	svc := NewService(mockAgent, mockAgent, mockAgent, mockAgent, mockAgent, registry, provider, nil, nil)
 	handler := NewHandler(svc, nil)
 
 	// 创建请求

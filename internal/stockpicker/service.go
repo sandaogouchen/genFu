@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,41 +21,51 @@ import (
 
 // Service 选股服务
 type Service struct {
-	screenerAgent     agent.Agent // 筛选Agent：生成筛选策略
-	analyzerAgent     agent.Agent // 分析Agent：深度分析筛选结果
-	registry          *tool.Registry
-	provider          DataProvider
-	allocationService *AllocationService
-	guideRepo         *GuideRepository
+	regimeAgent             agent.Agent // 市场状态识别Agent
+	screenerAgent           agent.Agent // 筛选Agent：生成筛选策略
+	analyzerAgent           agent.Agent // 分析Agent：深度分析筛选结果
+	portfolioFitAgent       agent.Agent // 组合约束匹配Agent
+	tradeGuideCompilerAgent agent.Agent // 交易指南编译Agent
+	registry                *tool.Registry
+	provider                DataProvider
+	allocationService       *AllocationService
+	guideRepo               *GuideRepository
+	runRepo                 *RunRepository
 }
 
 // NewService 创建选股服务
 func NewService(
+	regimeAgent agent.Agent,
 	screenerAgent agent.Agent,
 	analyzerAgent agent.Agent,
+	portfolioFitAgent agent.Agent,
+	tradeGuideCompilerAgent agent.Agent,
 	registry *tool.Registry,
 	provider DataProvider,
 	guideRepo *GuideRepository,
+	runRepo *RunRepository,
 ) *Service {
 	return &Service{
-		screenerAgent:     screenerAgent,
-		analyzerAgent:     analyzerAgent,
-		registry:          registry,
-		provider:          provider,
-		allocationService: NewAllocationService(),
-		guideRepo:         guideRepo,
+		regimeAgent:             regimeAgent,
+		screenerAgent:           screenerAgent,
+		analyzerAgent:           analyzerAgent,
+		portfolioFitAgent:       portfolioFitAgent,
+		tradeGuideCompilerAgent: tradeGuideCompilerAgent,
+		registry:                registry,
+		provider:                provider,
+		allocationService:       NewAllocationService(),
+		guideRepo:               guideRepo,
+		runRepo:                 runRepo,
 	}
 }
 
 // PickStocks 执行选股
-func (s *Service) PickStocks(ctx context.Context, req StockPickRequest) (StockPickResponse, error) {
+func (s *Service) PickStocks(ctx context.Context, req StockPickRequest) (resp StockPickResponse, retErr error) {
 	totalStartTime := time.Now()
-
 	if s == nil {
 		return StockPickResponse{}, errors.New("service_not_initialized")
 	}
 
-	// 1. 设置默认值
 	if req.TopN <= 0 {
 		req.TopN = 5
 	}
@@ -62,100 +73,136 @@ func (s *Service) PickStocks(ctx context.Context, req StockPickRequest) (StockPi
 		req.DateTo = time.Now()
 	}
 	if req.DateFrom.IsZero() {
-		req.DateFrom = req.DateTo.AddDate(0, 0, -3) // 默认近3天
+		req.DateFrom = req.DateTo.AddDate(0, 0, -3)
 	}
+	req.RiskProfile = normalizeRiskProfile(req.RiskProfile)
+
 	days := int(req.DateTo.Sub(req.DateFrom).Hours()/24) + 1
 	if days <= 0 {
 		days = 3
 	}
 
-	log.Printf("[选股服务] 开始执行选股 topN=%d days=%d", req.TopN, days)
+	pickID := fmt.Sprintf("pick_%d", time.Now().UnixNano())
+	warnings := make([]string, 0, 8)
+	var marketData MarketData
+	var newsEvents []NewsEvent
+	var holdings []Position
+	var stockList []tool.MarketItem
+	var regimeOutput *RegimeOutput
+	var screeningOutput *AgentScreeningOutput
+	var screeningResult *ScreeningResult
+	var analysisSnapshot interface{}
+	var routingSnapshot interface{}
+	var candidateSnapshot interface{}
+	var portfolioFitSnapshot interface{}
+	var tradeGuidesSnapshot interface{}
 
-	// 2. 准备数据
+	defer func() {
+		if s.runRepo == nil {
+			return
+		}
+		status := "completed"
+		errorMessage := ""
+		if retErr != nil {
+			status = "failed"
+			errorMessage = retErr.Error()
+		}
+		saveErr := s.runRepo.SaveByPickID(ctx, pickID, StockPickRunSnapshot{
+			Request:       req,
+			MarketData:    marketData,
+			Regime:        regimeOutput,
+			Routing:       routingSnapshot,
+			CandidatePool: candidateSnapshot,
+			Analysis:      analysisSnapshot,
+			PortfolioFit:  portfolioFitSnapshot,
+			TradeGuides:   tradeGuidesSnapshot,
+			Warnings:      warnings,
+			Status:        status,
+			ErrorMessage:  errorMessage,
+		})
+		if saveErr != nil {
+			log.Printf("[选股服务] 保存运行快照失败 pick_id=%s err=%v", pickID, saveErr)
+		}
+	}()
+
+	log.Printf("[选股服务] 开始执行选股 topN=%d days=%d risk_profile=%s", req.TopN, days, req.RiskProfile)
+
+	// 1) 准备数据
 	dataStartTime := time.Now()
-	marketData, err := s.provider.GetMarketData(ctx, days)
+	var err error
+	marketData, err = s.provider.GetMarketData(ctx, days)
 	if err != nil {
 		return StockPickResponse{}, fmt.Errorf("get_market_data_failed: %w", err)
 	}
-
-	newsEvents, err := s.provider.GetRecentNews(ctx, days, 50)
+	newsEvents, err = s.provider.GetRecentNews(ctx, days, 50)
 	if err != nil {
 		return StockPickResponse{}, fmt.Errorf("get_news_failed: %w", err)
 	}
-
-	var holdings []Position
 	if req.AccountID > 0 {
 		holdings, err = s.provider.GetHoldings(ctx, req.AccountID)
 		if err != nil {
-			// 持仓获取失败不影响选股
 			holdings = []Position{}
 		}
 	}
-
-	stockList, err := s.provider.GetStockList(ctx)
+	stockList, err = s.provider.GetStockList(ctx)
 	if err != nil {
 		log.Printf("[选股服务] 获取股票列表失败，降级继续 err=%v", err)
 		stockList = []tool.MarketItem{}
 	}
+	warnings = append(warnings, s.buildWarnings(marketData, newsEvents, stockList)...)
 	log.Printf("[选股服务] 数据准备完成 耗时=%v 新闻数=%d 股票数=%d", time.Since(dataStartTime), len(newsEvents), len(stockList))
 
-	// ========== 阶段1: 筛选阶段 ==========
-	log.Printf("[选股服务] ========== 阶段1: 筛选阶段 ==========")
+	// 2) 市场状态识别
+	regimeOutput, err = s.runRegimeAgent(ctx, req, marketData, newsEvents, holdings)
+	if err != nil {
+		warnings = append(warnings, "RegimeAgent失败，已降级为启发式市场状态识别")
+		fallback := fallbackRegimeFromMarketData(marketData)
+		regimeOutput = &fallback
+	}
 
-	// 3. 调用筛选Agent，获取筛选策略
-	screenerStartTime := time.Now()
-	screenerInput := s.buildScreenerInput(req, marketData, newsEvents, holdings)
+	// 3) 策略路由 + 候选池
+	screenerInput := s.buildScreenerInput(req, marketData, newsEvents, holdings, regimeOutput)
 	log.Printf("[选股服务] 调用筛选Agent...")
 	screenerResp, err := s.screenerAgent.Handle(ctx, generate.GenerateRequest{
-		Messages: []message.Message{
-			{Role: message.RoleUser, Content: screenerInput},
-		},
+		Messages: []message.Message{{Role: message.RoleUser, Content: screenerInput}},
 	})
 	if err != nil {
 		return StockPickResponse{}, fmt.Errorf("screener_agent_failed: %w", err)
 	}
-	log.Printf("[选股服务] 筛选Agent完成 耗时=%v", time.Since(screenerStartTime))
-
-	// 4. 解析筛选策略输出
-	screeningOutput, err := s.parseScreenerOutput(screenerResp.Message.Content)
+	screeningOutput, err = s.parseScreenerOutput(screenerResp.Message.Content)
 	if err != nil {
 		return StockPickResponse{}, fmt.Errorf("parse_screener_output_failed: %w", err)
 	}
-	log.Printf("[选股服务] 筛选策略: %s", screeningOutput.StrategyName)
+	routingSnapshot = map[string]interface{}{
+		"strategy_name":        screeningOutput.StrategyName,
+		"strategy_description": screeningOutput.StrategyDescription,
+		"screening_conditions": screeningOutput.ScreeningConditions,
+		"market_context":       screeningOutput.MarketContext,
+		"risk_notes":           screeningOutput.RiskNotes,
+		"market_regime":        regimeOutput.MarketRegime,
+	}
 
-	// 5. 执行筛选，获取候选股票
-	screeningStartTime := time.Now()
-	screeningResult, err := s.executeScreening(ctx, screeningOutput.ScreeningConditions)
+	screeningResult, err = s.executeScreening(ctx, screeningOutput.ScreeningConditions)
 	if err != nil {
 		return StockPickResponse{}, fmt.Errorf("execute_screening_failed: %w", err)
 	}
-	log.Printf("[选股服务] 筛选执行完成 候选股票数=%d 耗时=%v", screeningResult.TotalMatched, time.Since(screeningStartTime))
+	candidateSnapshot = screeningResult
 
-	// ========== 阶段2: 分析验证阶段 ==========
-	log.Printf("[选股服务] ========== 阶段2: 分析验证阶段 ==========")
-
-	// 6. 调用分析验证Agent，对筛选结果进行深度分析
-	analyzerStartTime := time.Now()
-	analyzerInput := s.buildAnalyzerInput(req, marketData, newsEvents, holdings, screeningResult, screeningOutput)
+	// 4) 深度分析
+	analyzerInput := s.buildAnalyzerInput(req, marketData, newsEvents, holdings, screeningResult, screeningOutput, regimeOutput)
 	log.Printf("[选股服务] 调用分析Agent...")
 	analyzerResp, err := s.analyzerAgent.Handle(ctx, generate.GenerateRequest{
-		Messages: []message.Message{
-			{Role: message.RoleUser, Content: analyzerInput},
-		},
+		Messages: []message.Message{{Role: message.RoleUser, Content: analyzerInput}},
 	})
 	if err != nil {
 		return StockPickResponse{}, fmt.Errorf("analyzer_agent_failed: %w", err)
 	}
-	log.Printf("[选股服务] 分析Agent完成 耗时=%v", time.Since(analyzerStartTime))
-
-	// 7. 解析分析结果
 	output, err := s.parseAgentOutput(analyzerResp.Message.Content)
 	if err != nil {
 		return StockPickResponse{}, fmt.Errorf("parse_output_failed: %w", err)
 	}
-	s.attachTradeGuides(output, screeningOutput, screeningResult)
+	analysisSnapshot = cloneJSON(output)
 
-	// 8. 补充资产配置信息
 	for i := range output.Stocks {
 		allocation := s.allocationService.CalculateAllocation(
 			&output.Stocks[i],
@@ -165,38 +212,70 @@ func (s *Service) PickStocks(ctx context.Context, req StockPickRequest) (StockPi
 		output.Stocks[i].Allocation = allocation
 	}
 
-	// 9. 限制返回数量
+	originalStocks := append([]StockPick(nil), output.Stocks...)
+
+	// 5) 组合约束重排（先硬过滤，再软排序）
+	portfolioFitOutput, fitErr := s.runPortfolioFitAgent(ctx, req, regimeOutput, output.Stocks, holdings, screeningResult)
+	if fitErr != nil {
+		warnings = append(warnings, "PortfolioFitAgent失败，已降级为基础权重模型")
+		s.applyFallbackPortfolioFit(output.Stocks, req.RiskProfile)
+		portfolioFitSnapshot = map[string]interface{}{"fallback": "allocation_only", "error": fitErr.Error()}
+	} else {
+		output.Stocks = s.applyPortfolioFit(output.Stocks, portfolioFitOutput, req.RiskProfile)
+		portfolioFitSnapshot = portfolioFitOutput
+		if len(output.Stocks) == 0 {
+			warnings = append(warnings, "PortfolioFitAgent硬约束后无可用标的，已回退分析结果")
+			output.Stocks = originalStocks
+			s.applyFallbackPortfolioFit(output.Stocks, req.RiskProfile)
+		}
+	}
+
+	// 6) 交易指南编译（先保留确定性v1兜底，再尝试编译v2）
+	s.attachTradeGuides(output, screeningOutput, screeningResult)
+	compilerOutput, compileErr := s.runTradeGuideCompilerAgent(ctx, req, regimeOutput, screeningOutput, screeningResult, output.Stocks)
+	if compileErr != nil {
+		warnings = append(warnings, "TradeGuideCompilerAgent失败，已降级使用确定性交易规则")
+		s.fillTradeGuideV2Fallback(output)
+	} else {
+		s.applyCompiledTradeGuides(output, compilerOutput)
+	}
+
 	if len(output.Stocks) > req.TopN {
 		output.Stocks = output.Stocks[:req.TopN]
 	}
 
-	// 10. 存储操作指南到数据库
-	pickID := fmt.Sprintf("pick_%d", time.Now().Unix())
+	// 持久化指南
 	for i := range output.Stocks {
-		if output.Stocks[i].OperationGuide != nil && s.guideRepo != nil {
-			output.Stocks[i].OperationGuide.Symbol = output.Stocks[i].Symbol
-			output.Stocks[i].OperationGuide.PickID = pickID
-			// 设置有效期（默认30天）
-			validUntil := time.Now().AddDate(0, 0, 30)
-			output.Stocks[i].OperationGuide.ValidUntil = &validUntil
-			if err := s.guideRepo.SaveGuide(ctx, output.Stocks[i].OperationGuide); err != nil {
-				// 存储失败不影响返回结果，仅记录日志
-				fmt.Printf("save operation guide failed: %v\n", err)
-			}
+		if s.guideRepo == nil {
+			continue
+		}
+		guide := buildPersistableGuide(&output.Stocks[i], pickID)
+		if guide == nil {
+			continue
+		}
+		validUntil := time.Now().AddDate(0, 0, 30)
+		guide.ValidUntil = &validUntil
+		if err := s.guideRepo.SaveGuide(ctx, guide); err != nil {
+			log.Printf("[选股服务] save operation guide failed: %v", err)
 		}
 	}
 
-	// 11. 构建响应
+	tradeGuidesSnapshot = cloneJSON(output.Stocks)
+
 	log.Printf("[选股服务] 选股完成 最终股票数=%d 总耗时=%v", len(output.Stocks), time.Since(totalStartTime))
-	return StockPickResponse{
-		PickID:        pickID,
-		GeneratedAt:   time.Now(),
-		Stocks:        output.Stocks,
-		MarketData:    marketData,
-		NewsSummary:   output.MarketView,
-		Warnings:      s.buildWarnings(marketData, newsEvents, stockList),
-		ScreeningInfo: screeningResult,
-	}, nil
+	resp = StockPickResponse{
+		PickID:           pickID,
+		GeneratedAt:      time.Now(),
+		Stocks:           output.Stocks,
+		MarketData:       marketData,
+		NewsSummary:      output.MarketView,
+		MarketRegime:     regimeOutput.MarketRegime,
+		RegimeConfidence: regimeOutput.RegimeConfidence,
+		RegimeReasoning:  regimeOutput.RegimeReasoning,
+		Warnings:         warnings,
+		ScreeningInfo:    screeningResult,
+	}
+	return resp, nil
 }
 
 // buildScreenerInput 构建筛选Agent输入
@@ -205,12 +284,14 @@ func (s *Service) buildScreenerInput(
 	marketData MarketData,
 	newsEvents []NewsEvent,
 	holdings []Position,
+	regime *RegimeOutput,
 ) string {
 	payload := map[string]interface{}{
 		"request":     req,
 		"market_data": marketData,
 		"news_events": newsEvents,
 		"holdings":    holdings,
+		"regime":      regime,
 	}
 	raw, _ := json.Marshal(payload)
 	return fmt.Sprintf("请根据当前市场状况，生成股票筛选策略，严格输出JSON：\n%s", string(raw))
@@ -304,6 +385,7 @@ func (s *Service) buildAnalyzerInput(
 	holdings []Position,
 	screeningResult *ScreeningResult,
 	screeningOutput *AgentScreeningOutput,
+	regime *RegimeOutput,
 ) string {
 	payload := map[string]interface{}{
 		"request":            req,
@@ -312,6 +394,7 @@ func (s *Service) buildAnalyzerInput(
 		"holdings":           holdings,
 		"screening_result":   screeningResult,
 		"screening_strategy": screeningOutput,
+		"regime":             regime,
 	}
 	raw, _ := json.Marshal(payload)
 	return fmt.Sprintf("请对以下筛选后的候选股票进行深度分析和验证，严格输出JSON：\n%s", string(raw))
@@ -367,6 +450,385 @@ func (s *Service) parseAgentOutput(content string) (*AgentOutput, error) {
 	return &output, nil
 }
 
+func normalizeRiskProfile(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "conservative":
+		return "conservative"
+	case "aggressive":
+		return "aggressive"
+	default:
+		return "balanced"
+	}
+}
+
+func riskBudgetCapForProfile(profile string) float64 {
+	switch normalizeRiskProfile(profile) {
+	case "conservative":
+		return 0.15
+	case "aggressive":
+		return 0.30
+	default:
+		return 0.20
+	}
+}
+
+func (s *Service) runRegimeAgent(
+	ctx context.Context,
+	req StockPickRequest,
+	marketData MarketData,
+	newsEvents []NewsEvent,
+	holdings []Position,
+) (*RegimeOutput, error) {
+	if s.regimeAgent == nil {
+		return nil, errors.New("regime_agent_not_initialized")
+	}
+	payload := map[string]interface{}{
+		"request":     req,
+		"market_data": marketData,
+		"news_events": newsEvents,
+		"holdings":    holdings,
+	}
+	raw, _ := json.Marshal(payload)
+	resp, err := s.regimeAgent.Handle(ctx, generate.GenerateRequest{
+		Messages: []message.Message{{Role: message.RoleUser, Content: fmt.Sprintf("识别当前市场状态，严格输出JSON：\n%s", string(raw))}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return parseRegimeOutput(resp.Message.Content)
+}
+
+func parseRegimeOutput(content string) (*RegimeOutput, error) {
+	content = strings.TrimSpace(content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
+
+	var output RegimeOutput
+	if err := json.Unmarshal([]byte(content), &output); err != nil {
+		return nil, fmt.Errorf("regime_json_parse_error: %w", err)
+	}
+	output.MarketRegime = strings.TrimSpace(output.MarketRegime)
+	if output.MarketRegime == "" {
+		return nil, errors.New("empty_market_regime")
+	}
+	output.RegimeConfidence = clampUnit(output.RegimeConfidence)
+	return &output, nil
+}
+
+func fallbackRegimeFromMarketData(marketData MarketData) RegimeOutput {
+	total := marketData.UpCount + marketData.DownCount
+	upRatio := 0.5
+	if total > 0 {
+		upRatio = float64(marketData.UpCount) / float64(total)
+	}
+	switch {
+	case upRatio >= 0.62:
+		return RegimeOutput{MarketRegime: "trend_up", RegimeConfidence: 0.62, RegimeReasoning: "上涨家数占优，市场偏强"}
+	case upRatio <= 0.38:
+		return RegimeOutput{MarketRegime: "trend_down", RegimeConfidence: 0.62, RegimeReasoning: "下跌家数占优，市场偏弱"}
+	case upRatio > 0.55:
+		return RegimeOutput{MarketRegime: "risk_on", RegimeConfidence: 0.55, RegimeReasoning: "风险偏好回升"}
+	case upRatio < 0.45:
+		return RegimeOutput{MarketRegime: "risk_off", RegimeConfidence: 0.55, RegimeReasoning: "风险偏好下降"}
+	default:
+		return RegimeOutput{MarketRegime: "range", RegimeConfidence: 0.5, RegimeReasoning: "多空均衡，震荡市"}
+	}
+}
+
+func (s *Service) runPortfolioFitAgent(
+	ctx context.Context,
+	req StockPickRequest,
+	regime *RegimeOutput,
+	stocks []StockPick,
+	holdings []Position,
+	screening *ScreeningResult,
+) (*PortfolioFitOutput, error) {
+	if s.portfolioFitAgent == nil {
+		return nil, errors.New("portfolio_fit_agent_not_initialized")
+	}
+	payload := map[string]interface{}{
+		"risk_profile":   req.RiskProfile,
+		"market_regime":  regime,
+		"holdings":       holdings,
+		"candidates":     stocks,
+		"screening_info": screening,
+	}
+	raw, _ := json.Marshal(payload)
+	resp, err := s.portfolioFitAgent.Handle(ctx, generate.GenerateRequest{
+		Messages: []message.Message{{Role: message.RoleUser, Content: fmt.Sprintf("请输出组合约束重排结果，严格JSON：\n%s", string(raw))}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return parsePortfolioFitOutput(resp.Message.Content)
+}
+
+func parsePortfolioFitOutput(content string) (*PortfolioFitOutput, error) {
+	content = strings.TrimSpace(content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
+
+	var output PortfolioFitOutput
+	if err := json.Unmarshal([]byte(content), &output); err != nil {
+		return nil, fmt.Errorf("portfolio_fit_json_parse_error: %w", err)
+	}
+	if len(output.Stocks) == 0 {
+		return nil, errors.New("empty_portfolio_fit_stocks")
+	}
+	for i := range output.Stocks {
+		output.Stocks[i].Symbol = strings.TrimSpace(output.Stocks[i].Symbol)
+		output.Stocks[i].FitScore = clampUnit(output.Stocks[i].FitScore)
+		output.Stocks[i].RiskBudgetWeight = clampUnit(output.Stocks[i].RiskBudgetWeight)
+	}
+	return &output, nil
+}
+
+func (s *Service) applyPortfolioFit(stocks []StockPick, fit *PortfolioFitOutput, riskProfile string) []StockPick {
+	if len(stocks) == 0 || fit == nil {
+		return stocks
+	}
+	bySymbol := make(map[string]PortfolioFitRecord, len(fit.Stocks))
+	for _, item := range fit.Stocks {
+		symbol := strings.TrimSpace(item.Symbol)
+		if symbol == "" {
+			continue
+		}
+		bySymbol[symbol] = item
+	}
+
+	cap := riskBudgetCapForProfile(riskProfile)
+	filtered := make([]StockPick, 0, len(stocks))
+	for i := range stocks {
+		item, ok := bySymbol[stocks[i].Symbol]
+		if !ok {
+			continue
+		}
+		if item.HardReject {
+			continue
+		}
+		if item.RiskBudgetWeight > cap {
+			continue
+		}
+		stocks[i].FitScore = item.FitScore
+		stocks[i].RiskBudgetWeight = item.RiskBudgetWeight
+		stocks[i].FitReasons = append([]string{}, item.FitReasons...)
+		if stocks[i].Allocation.SuggestedWeight > item.RiskBudgetWeight && item.RiskBudgetWeight > 0 {
+			stocks[i].Allocation.SuggestedWeight = item.RiskBudgetWeight
+		}
+		filtered = append(filtered, stocks[i])
+	}
+
+	sort.SliceStable(filtered, func(i, j int) bool {
+		if filtered[i].FitScore == filtered[j].FitScore {
+			return filtered[i].RiskBudgetWeight > filtered[j].RiskBudgetWeight
+		}
+		return filtered[i].FitScore > filtered[j].FitScore
+	})
+	return filtered
+}
+
+func (s *Service) applyFallbackPortfolioFit(stocks []StockPick, riskProfile string) {
+	cap := riskBudgetCapForProfile(riskProfile)
+	for i := range stocks {
+		weight := stocks[i].Allocation.SuggestedWeight
+		if weight <= 0 {
+			weight = 0.1
+		}
+		if weight > cap {
+			weight = cap
+		}
+		stocks[i].FitScore = clampUnit(0.5 + stocks[i].Confidence*0.4)
+		stocks[i].RiskBudgetWeight = weight
+		if len(stocks[i].FitReasons) == 0 {
+			stocks[i].FitReasons = []string{"使用基础仓位模型降级估计"}
+		}
+	}
+}
+
+func (s *Service) runTradeGuideCompilerAgent(
+	ctx context.Context,
+	req StockPickRequest,
+	regime *RegimeOutput,
+	screeningOutput *AgentScreeningOutput,
+	screeningResult *ScreeningResult,
+	stocks []StockPick,
+) (*TradeGuideCompilerOutput, error) {
+	if s.tradeGuideCompilerAgent == nil {
+		return nil, errors.New("trade_guide_compiler_agent_not_initialized")
+	}
+	payload := map[string]interface{}{
+		"request":            req,
+		"regime":             regime,
+		"screening_strategy": screeningOutput,
+		"screening_result":   screeningResult,
+		"stocks":             stocks,
+	}
+	raw, _ := json.Marshal(payload)
+	resp, err := s.tradeGuideCompilerAgent.Handle(ctx, generate.GenerateRequest{
+		Messages: []message.Message{{Role: message.RoleUser, Content: fmt.Sprintf("编译交易规则并输出JSON：\n%s", string(raw))}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return parseTradeGuideCompilerOutput(resp.Message.Content)
+}
+
+func parseTradeGuideCompilerOutput(content string) (*TradeGuideCompilerOutput, error) {
+	content = strings.TrimSpace(content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
+
+	var output TradeGuideCompilerOutput
+	if err := json.Unmarshal([]byte(content), &output); err != nil {
+		return nil, fmt.Errorf("trade_guide_compiler_json_parse_error: %w", err)
+	}
+	if len(output.Stocks) == 0 {
+		return nil, errors.New("empty_trade_guide_compiler_stocks")
+	}
+	return &output, nil
+}
+
+func (s *Service) applyCompiledTradeGuides(output *AgentOutput, compiled *TradeGuideCompilerOutput) {
+	if output == nil || compiled == nil {
+		return
+	}
+	bySymbol := make(map[string]TradeGuideCompilerRecord, len(compiled.Stocks))
+	for _, item := range compiled.Stocks {
+		symbol := strings.TrimSpace(item.Symbol)
+		if symbol == "" {
+			continue
+		}
+		bySymbol[symbol] = item
+	}
+	for i := range output.Stocks {
+		item, ok := bySymbol[output.Stocks[i].Symbol]
+		if !ok {
+			if strings.TrimSpace(output.Stocks[i].TradeGuideJSONV2) == "" {
+				output.Stocks[i].TradeGuideJSONV2 = convertLegacyGuideToV2(output.Stocks[i].TradeGuideJSON)
+			}
+			continue
+		}
+		if text := strings.TrimSpace(item.TradeGuideText); text != "" {
+			output.Stocks[i].TradeGuideText = text
+		}
+		v2 := strings.TrimSpace(item.TradeGuideJSONV2)
+		if !json.Valid([]byte(v2)) {
+			v2 = convertLegacyGuideToV2(output.Stocks[i].TradeGuideJSON)
+		}
+		output.Stocks[i].TradeGuideJSONV2 = v2
+
+		v1 := strings.TrimSpace(item.TradeGuideJSON)
+		if !json.Valid([]byte(v1)) {
+			v1 = projectGuideV2ToV1(v2, output.Stocks[i].Symbol)
+		}
+		if strings.TrimSpace(v1) == "" || !json.Valid([]byte(v1)) {
+			v1 = output.Stocks[i].TradeGuideJSON
+		}
+		output.Stocks[i].TradeGuideJSON = v1
+		output.Stocks[i].TradeGuideVersion = "v2"
+	}
+}
+
+func (s *Service) fillTradeGuideV2Fallback(output *AgentOutput) {
+	if output == nil {
+		return
+	}
+	for i := range output.Stocks {
+		if strings.TrimSpace(output.Stocks[i].TradeGuideJSONV2) == "" {
+			output.Stocks[i].TradeGuideJSONV2 = convertLegacyGuideToV2(output.Stocks[i].TradeGuideJSON)
+		}
+		if strings.TrimSpace(output.Stocks[i].TradeGuideVersion) == "" {
+			output.Stocks[i].TradeGuideVersion = "v1"
+		}
+	}
+}
+
+func convertLegacyGuideToV2(v1 string) string {
+	v1 = strings.TrimSpace(v1)
+	if v1 == "" || !json.Valid([]byte(v1)) {
+		return `{}`
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(v1), &payload); err != nil {
+		return `{}`
+	}
+	out := map[string]interface{}{
+		"schema_version": "v2",
+		"asset_type":     payload["asset_type"],
+		"symbol":         payload["symbol"],
+		"entries":        payload["buy_rules"],
+		"exits":          payload["sell_rules"],
+		"risk_controls":  payload["risk_controls"],
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return `{}`
+	}
+	return string(raw)
+}
+
+func projectGuideV2ToV1(v2 string, symbol string) string {
+	v2 = strings.TrimSpace(v2)
+	if v2 == "" || !json.Valid([]byte(v2)) {
+		return `{}`
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(v2), &payload); err != nil {
+		return `{}`
+	}
+	out := map[string]interface{}{
+		"asset_type":    "stock",
+		"strategy_type": "compiled_v2",
+		"strategy_name": "compiled_v2",
+		"symbol":        symbol,
+		"buy_rules":     payload["entries"],
+		"sell_rules":    payload["exits"],
+		"risk_controls": payload["risk_controls"],
+	}
+	if st, ok := payload["asset_type"]; ok {
+		out["asset_type"] = st
+	}
+	if sym, ok := payload["symbol"]; ok {
+		out["symbol"] = sym
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return `{}`
+	}
+	return string(raw)
+}
+
+func cloneJSON(v interface{}) interface{} {
+	if v == nil {
+		return nil
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var out interface{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func clampUnit(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
 type quantitativeRule struct {
 	RuleID       string  `json:"rule_id"`
 	Indicator    string  `json:"indicator"`
@@ -405,8 +867,110 @@ func (s *Service) attachTradeGuides(output *AgentOutput, screeningOutput *AgentS
 		text, raw := s.buildTradeGuideForStock(&output.Stocks[i], screeningOutput, screeningResult)
 		output.Stocks[i].TradeGuideText = text
 		output.Stocks[i].TradeGuideJSON = raw
+		output.Stocks[i].TradeGuideJSONV2 = convertLegacyGuideToV2(raw)
 		output.Stocks[i].TradeGuideVersion = "v1"
 	}
+}
+
+func buildPersistableGuide(stock *StockPick, pickID string) *OperationGuide {
+	if stock == nil || strings.TrimSpace(stock.Symbol) == "" {
+		return nil
+	}
+
+	guide := &OperationGuide{}
+	if stock.OperationGuide != nil {
+		copied := *stock.OperationGuide
+		guide = &copied
+	}
+	guide.Symbol = stock.Symbol
+	guide.PickID = pickID
+	guide.TradeGuideText = strings.TrimSpace(stock.TradeGuideText)
+	guide.TradeGuideJSON = strings.TrimSpace(stock.TradeGuideJSON)
+	guide.TradeGuideJSONV2 = strings.TrimSpace(stock.TradeGuideJSONV2)
+	guide.TradeGuideVersion = strings.TrimSpace(stock.TradeGuideVersion)
+
+	if len(guide.BuyConditions) == 0 && len(guide.SellConditions) == 0 {
+		buys, sells, stopLoss, takeProfit := deriveConditionsFromTradeGuide(guide.TradeGuideJSON, guide.TradeGuideText)
+		guide.BuyConditions = append(guide.BuyConditions, buys...)
+		guide.SellConditions = append(guide.SellConditions, sells...)
+		if strings.TrimSpace(guide.StopLoss) == "" {
+			guide.StopLoss = stopLoss
+		}
+		if strings.TrimSpace(guide.TakeProfit) == "" {
+			guide.TakeProfit = takeProfit
+		}
+	}
+
+	if len(guide.BuyConditions) == 0 && strings.TrimSpace(guide.TradeGuideText) != "" {
+		guide.BuyConditions = []Condition{{Type: "text", Description: "参考交易指南执行买入逻辑", Value: guide.TradeGuideText}}
+	}
+	if len(guide.SellConditions) == 0 && strings.TrimSpace(guide.TradeGuideText) != "" {
+		guide.SellConditions = []Condition{{Type: "text", Description: "参考交易指南执行卖出逻辑", Value: guide.TradeGuideText}}
+	}
+	if strings.TrimSpace(guide.TradeGuideVersion) == "" && (guide.TradeGuideText != "" || guide.TradeGuideJSON != "" || guide.TradeGuideJSONV2 != "") {
+		guide.TradeGuideVersion = "v1"
+	}
+
+	if len(guide.BuyConditions) == 0 && len(guide.SellConditions) == 0 &&
+		strings.TrimSpace(guide.StopLoss) == "" && strings.TrimSpace(guide.TakeProfit) == "" &&
+		guide.TradeGuideText == "" && guide.TradeGuideJSON == "" && guide.TradeGuideJSONV2 == "" {
+		return nil
+	}
+	return guide
+}
+
+func deriveConditionsFromTradeGuide(rawGuide string, fallbackText string) ([]Condition, []Condition, string, string) {
+	var parsed stockTradeGuidePayload
+	rawGuide = strings.TrimSpace(rawGuide)
+	if rawGuide == "" || !json.Valid([]byte(rawGuide)) {
+		return nil, nil, "", ""
+	}
+	if err := json.Unmarshal([]byte(rawGuide), &parsed); err != nil {
+		return nil, nil, "", ""
+	}
+
+	buys := make([]Condition, 0, len(parsed.BuyRules))
+	for _, rule := range parsed.BuyRules {
+		buys = append(buys, Condition{
+			Type:        "quant",
+			Description: "买入规则：" + strings.TrimSpace(rule.Note),
+			Value:       buildRuleValue(rule),
+		})
+	}
+	sells := make([]Condition, 0, len(parsed.SellRules))
+	for _, rule := range parsed.SellRules {
+		sells = append(sells, Condition{
+			Type:        "quant",
+			Description: "卖出规则：" + strings.TrimSpace(rule.Note),
+			Value:       buildRuleValue(rule),
+		})
+	}
+
+	stopLoss := ""
+	takeProfit := ""
+	if parsed.RiskControls.StopLossPrice > 0 {
+		stopLoss = fmt.Sprintf("跌至%.2f执行止损", parsed.RiskControls.StopLossPrice)
+	}
+	if parsed.RiskControls.TakeProfitPrice > 0 {
+		takeProfit = fmt.Sprintf("涨至%.2f可止盈", parsed.RiskControls.TakeProfitPrice)
+	}
+	if len(buys) == 0 && len(sells) == 0 && strings.TrimSpace(fallbackText) != "" {
+		buys = append(buys, Condition{Type: "text", Description: "参考交易指南", Value: fallbackText})
+		sells = append(sells, Condition{Type: "text", Description: "参考交易指南", Value: fallbackText})
+	}
+	return buys, sells, stopLoss, takeProfit
+}
+
+func buildRuleValue(rule quantitativeRule) string {
+	parts := []string{
+		"indicator=" + strings.TrimSpace(rule.Indicator),
+		"operator=" + strings.TrimSpace(rule.Operator),
+		fmt.Sprintf("trigger=%.4f", rule.TriggerValue),
+	}
+	if tf := strings.TrimSpace(rule.Timeframe); tf != "" {
+		parts = append(parts, "timeframe="+tf)
+	}
+	return strings.Join(parts, ";")
 }
 
 func (s *Service) buildTradeGuideForStock(stock *StockPick, screeningOutput *AgentScreeningOutput, screeningResult *ScreeningResult) (string, string) {

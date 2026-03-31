@@ -13,12 +13,17 @@ import (
 	"genFu/internal/agent/bull"
 	"genFu/internal/agent/debate"
 	decisionagent "genFu/internal/agent/decision"
+	executionplanner "genFu/internal/agent/execution_planner"
 	fundmanager "genFu/internal/agent/fund_manager"
 	"genFu/internal/agent/kline"
 	pdfsummaryagent "genFu/internal/agent/pdfsummary"
+	portfoliofitagent "genFu/internal/agent/portfoliofit"
+	posttradereview "genFu/internal/agent/post_trade_review"
+	regimeagent "genFu/internal/agent/regime"
 	stockpickeragent "genFu/internal/agent/stockpicker"
 	stockscreener "genFu/internal/agent/stockscreener"
 	"genFu/internal/agent/summary"
+	tradeguidecompileragent "genFu/internal/agent/tradeguidecompiler"
 	"genFu/internal/analyze"
 	"genFu/internal/api"
 	"genFu/internal/chat"
@@ -86,7 +91,7 @@ func main() {
 		log.Fatal(err)
 	}
 	chatRepo := chat.NewRepository(database)
-	chatService := chat.NewService(chatModel, chatRepo, registry)
+	var chatService *chat.Service
 	conversationRepo := conversationlog.NewRepository(database)
 
 	defaultAgent := agent.NewFuncAgent("default", []string{"chat"}, agent.DefaultGenerate)
@@ -119,11 +124,31 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	executionPlannerAgent, err := executionplanner.New(chatModel, registry)
+	if err != nil {
+		log.Fatal(err)
+	}
+	postTradeReviewAgent, err := posttradereview.New(chatModel, registry)
+	if err != nil {
+		log.Fatal(err)
+	}
 	pdfSummaryAgent, err := pdfsummaryagent.New(chatModel, registry)
 	if err != nil {
 		log.Fatal(err)
 	}
 	stockpickerAgent, err := stockpickeragent.New(chatModel, registry)
+	if err != nil {
+		log.Fatal(err)
+	}
+	regimeAgent, err := regimeagent.New(chatModel, registry)
+	if err != nil {
+		log.Fatal(err)
+	}
+	portfolioFitAgent, err := portfoliofitagent.New(chatModel, registry)
+	if err != nil {
+		log.Fatal(err)
+	}
+	tradeGuideCompilerAgent, err := tradeguidecompileragent.New(chatModel, registry)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -140,13 +165,54 @@ func main() {
 	analyzer := analyze.NewAnalyzer(klineAgent, fundManagerAgent, bullAgent, bearAgent, debateAgent, summaryAgent, registry, analyzeRepo)
 	tradeEngine := trade_signal.NewInvestmentEngine(investmentSvc)
 	newsProvider := decision.NewBriefNewsProvider(newsRepo, investmentRepo, appConfig.News.AccountID, appConfig.News.BriefLimit, appConfig.News.Keywords)
-	decisionSvc := decision.NewService(decisionAgent, registry, tradeEngine, analyzeRepo, investmentRepo, newsProvider)
+	decisionRepo := decision.NewRepository(database)
 	financialRepo := financial.NewRepository(database)
 	pdfAgentAdapter := NewPDFAgentAdapter(pdfSummaryAgent)
 	financialSvc := financial.NewService(financialRepo, pdfAgentAdapter)
 	stockpickerProvider := stockpicker.NewDataProvider(newsRepo, investmentRepo, analyzeRepo, registry, financialSvc)
 	stockpickerGuideRepo := stockpicker.NewGuideRepository(database)
-	stockpickerSvc := stockpicker.NewService(stockScreenerAgent, stockpickerAgent, registry, stockpickerProvider, stockpickerGuideRepo)
+	stockpickerRunRepo := stockpicker.NewRunRepository(database)
+	decisionSvc := decision.NewService(
+		decisionAgent,
+		registry,
+		tradeEngine,
+		analyzeRepo,
+		investmentRepo,
+		stockpickerGuideRepo,
+		newsProvider,
+		decision.WithExecutionPlannerAgent(executionPlannerAgent),
+		decision.WithPostTradeReviewAgent(postTradeReviewAgent),
+		decision.WithPolicyGuard(decision.NewPolicyGuardAgent(investmentRepo)),
+		decision.WithDecisionRepository(decisionRepo),
+		decision.WithRiskBudgetDefaults(decision.RiskBudget{
+			MaxSingleOrderRatio:    appConfig.Decision.MaxSingleOrderRatio,
+			MaxSymbolExposureRatio: appConfig.Decision.MaxSymbolExposureRatio,
+			MaxDailyTradeRatio:     appConfig.Decision.MaxDailyTradeRatio,
+			MinConfidence:          appConfig.Decision.MinConfidence,
+		}),
+	)
+	stockpickerSvc := stockpicker.NewService(
+		regimeAgent,
+		stockScreenerAgent,
+		stockpickerAgent,
+		portfolioFitAgent,
+		tradeGuideCompilerAgent,
+		registry,
+		stockpickerProvider,
+		stockpickerGuideRepo,
+		stockpickerRunRepo,
+	)
+	intentRouter := chat.NewIntentRouterAgent(chatModel)
+	sessionMemoryAgent := chat.NewSessionMemoryAgent(chatModel)
+	chatService = chat.NewService(
+		chatModel,
+		chatRepo,
+		registry,
+		chat.WithDecisionService(decisionSvc),
+		chat.WithStockPickerService(stockpickerSvc),
+		chat.WithIntentRouter(intentRouter),
+		chat.WithSessionMemoryAgent(sessionMemoryAgent),
+	)
 	dailyReviewSvc := analyze.NewDailyReviewService(chatModel, registry, analyzeRepo, investmentRepo)
 	loc, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
@@ -216,7 +282,35 @@ func main() {
 			)
 		}
 
-		newsFunnel := news.NewFunnel(embedSvc, llmAdapter, portfolioContext)
+		funnelConfig := news.DefaultConfig()
+		funnelConfig.EventImpactEnabled = appConfig.News.Pipeline.EventImpactEnabled
+		funnelConfig.CausalVerifierEnabled = appConfig.News.Pipeline.CausalVerifierEnabled
+		funnelConfig.EventImpactBatchSize = appConfig.News.Pipeline.EventImpactBatchSize
+		funnelConfig.VerifierMaxAnalyze = appConfig.News.Pipeline.VerifierMaxAnalyze
+		funnelConfig.VerifierWeakThreshold = appConfig.News.Pipeline.VerifierWeakThreshold
+		funnelConfig.VerifierInvalidThreshold = appConfig.News.Pipeline.VerifierInvalidThreshold
+
+		var eventImpactAgent news.EventImpactAgent
+		if appConfig.News.Pipeline.EventImpactEnabled {
+			eventImpactAgent = news.NewLLMEventImpactAgent(llmAdapter, appConfig.News.Pipeline.EventImpactBatchSize)
+		}
+		var causalVerifierAgent news.CausalVerifierAgent
+		if appConfig.News.Pipeline.CausalVerifierEnabled {
+			causalVerifierAgent = news.NewLLMCausalVerifierAgent(
+				llmAdapter,
+				appConfig.News.Pipeline.VerifierWeakThreshold,
+				appConfig.News.Pipeline.VerifierInvalidThreshold,
+			)
+		}
+
+		newsFunnel := news.NewFunnel(
+			embedSvc,
+			llmAdapter,
+			portfolioContext,
+			news.WithFunnelConfig(funnelConfig),
+			news.WithEventImpactAgent(eventImpactAgent),
+			news.WithCausalVerifierAgent(causalVerifierAgent),
+		)
 
 		// Create news pipeline
 		newsPipeline = news.NewPipeline(
@@ -238,7 +332,7 @@ func main() {
 		}
 	}
 
-	stockWF, err := workflow.NewStockWorkflow(context.Background(), chatModel, registry, investmentRepo)
+	stockWF, err := workflow.NewStockWorkflow(context.Background(), chatModel, registry, investmentRepo, appConfig.RSSHub.Routes)
 	if err != nil {
 		log.Fatal(err)
 	}

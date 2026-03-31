@@ -1,20 +1,34 @@
 import { useState, useEffect } from 'react';
 
 type Theme = 'light' | 'dark';
+const THEME_STORAGE_KEY = 'genfu.ui.theme';
+const LEGACY_THEME_STORAGE_KEY = 'theme';
 
 export function useTheme() {
   const [theme, setTheme] = useState<Theme>(() => {
-    const savedTheme = localStorage.getItem('theme') as Theme;
-    if (savedTheme) {
-      return savedTheme;
+    try {
+      const savedTheme =
+        (localStorage.getItem(THEME_STORAGE_KEY) ??
+          localStorage.getItem(LEGACY_THEME_STORAGE_KEY)) as Theme | null;
+      if (savedTheme === 'light' || savedTheme === 'dark') {
+        return savedTheme;
+      }
+    } catch {
+      void 0;
     }
+
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   });
 
   useEffect(() => {
-    document.documentElement.classList.remove('light', 'dark');
-    document.documentElement.classList.add(theme);
-    localStorage.setItem('theme', theme);
+    const html = document.documentElement;
+    html.classList.remove('light');
+    html.classList.toggle('dark', theme === 'dark');
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      void 0;
+    }
   }, [theme]);
 
   const toggleTheme = () => {
@@ -26,4 +40,4 @@ export function useTheme() {
     toggleTheme,
     isDark: theme === 'dark'
   };
-} 
+}

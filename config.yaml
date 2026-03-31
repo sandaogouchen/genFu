@@ -7,11 +7,11 @@ pg:
   conn_max_lifetime: "30m"
 llm:
   endpoint: "https://aihubmix.com/v1/"
-  api_key: "sk-b4CBTK1q4MbeOvVx745c567aC3604603B1699bBe2043828f"
+  api_key: "sk-x"
   model: "gemini-3-flash-preview"
   # endpoint: "http://localhost:8317/v1/chat/completions/"
   # api_key: "sk-sw4heaw39usffnoaw9"
-  # model: "glm-4.7"
+  # model: "gpt5.3-codex"
 
   timeout: "600s"
   temperature: 0.2
@@ -57,6 +57,17 @@ news:
     trading_start: "09:30"
     trading_end: "15:00"
     lookback_duration: "72h"
+    event_impact_enabled: true
+    causal_verifier_enabled: true
+    event_impact_batch_size: 10
+    verifier_max_analyze: 5
+    verifier_weak_threshold: 0.6
+    verifier_invalid_threshold: 0.4
+decision:
+  max_single_order_ratio: 0.20
+  max_symbol_exposure_ratio: 0.30
+  max_daily_trade_ratio: 0.40
+  min_confidence: 0.55
 next_open:
   enabled: true
   hour: 19

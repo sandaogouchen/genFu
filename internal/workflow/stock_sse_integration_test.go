@@ -131,7 +131,7 @@ func TestStockSSEFullChain(t *testing.T) {
 		t.Fatalf("summary: %v", err)
 	}
 	log.Printf("agents initialized")
-	wf, err := newStockWorkflowWithAgents(context.Background(), model, reg, investRepo, bullAgent, bearAgent, debateAgent, summaryAgent)
+	wf, err := newStockWorkflowWithAgents(context.Background(), model, reg, investRepo, []string{selectedRoute}, bullAgent, bearAgent, debateAgent, summaryAgent)
 	if err != nil {
 		t.Fatalf("workflow: %v", err)
 	}

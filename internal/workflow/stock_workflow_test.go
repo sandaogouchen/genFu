@@ -59,7 +59,7 @@ func TestStockWorkflowRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("summary: %v", err)
 	}
-	wf, err := newStockWorkflowWithAgents(context.Background(), model, reg, nil, bullAgent, bearAgent, debateAgent, summaryAgent)
+	wf, err := newStockWorkflowWithAgents(context.Background(), model, reg, nil, routes, bullAgent, bearAgent, debateAgent, summaryAgent)
 	if err != nil {
 		t.Fatalf("workflow: %v", err)
 	}

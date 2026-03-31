@@ -12,6 +12,13 @@ type GenerateRequest struct {
 	Meta      map[string]string `json:"meta,omitempty"`
 }
 
+type IntentEventPayload struct {
+	Intent     string  `json:"intent"`
+	Workflow   string  `json:"workflow"`
+	Confidence float64 `json:"confidence"`
+	Fallback   bool    `json:"fallback,omitempty"`
+}
+
 type GenerateResponse struct {
 	Message   message.Message   `json:"message"`
 	ToolCalls []tool.ToolCall   `json:"tool_calls,omitempty"`
@@ -19,10 +26,11 @@ type GenerateResponse struct {
 }
 
 type GenerateEvent struct {
-	Type       string           `json:"type"`
-	Delta      string           `json:"delta,omitempty"`
-	Message    *message.Message `json:"message,omitempty"`
-	ToolCall   *tool.ToolCall   `json:"tool_call,omitempty"`
-	ToolResult *tool.ToolResult `json:"tool_result,omitempty"`
-	Done       bool             `json:"done,omitempty"`
+	Type       string              `json:"type"`
+	Delta      string              `json:"delta,omitempty"`
+	Message    *message.Message    `json:"message,omitempty"`
+	ToolCall   *tool.ToolCall      `json:"tool_call,omitempty"`
+	ToolResult *tool.ToolResult    `json:"tool_result,omitempty"`
+	Intent     *IntentEventPayload `json:"intent,omitempty"`
+	Done       bool                `json:"done,omitempty"`
 }

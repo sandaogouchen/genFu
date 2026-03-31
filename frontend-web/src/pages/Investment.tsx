@@ -477,13 +477,13 @@ export default function Investment() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4">
           <div className="w-full max-w-md rounded-xl border border-border bg-card p-4 shadow-xl">
             <div className="text-sm font-semibold text-foreground">
-              {step === "search" ? "搜索基金" : "添加持仓"}
+              {step === "search" ? "搜索基金/股票" : "添加持仓"}
             </div>
 
             {step === "search" ? (
               <div className="mt-3 space-y-3">
                 <Input
-                  placeholder="输入基金代码或名称搜索..."
+                  placeholder="输入基金/股票代码或名称搜索..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   autoFocus
@@ -522,7 +522,7 @@ export default function Investment() {
                   </div>
                 )}
                 {searchQuery && !searching && searchResults.length === 0 && (
-                  <div className="text-sm text-muted-foreground">未找到匹配基金</div>
+                  <div className="text-sm text-muted-foreground">未找到匹配标的</div>
                 )}
               </div>
             ) : (

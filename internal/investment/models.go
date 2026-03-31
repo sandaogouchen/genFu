@@ -17,26 +17,27 @@ type Account struct {
 }
 
 type Instrument struct {
-	ID           int64     `json:"id"`
-	Symbol       string    `json:"symbol"`
-	Name         string    `json:"name"`
-	AssetType    string    `json:"asset_type"`
-	Industry     string    `json:"industry,omitempty"`
-	Products     []string  `json:"products,omitempty"`
-	Competitors  []string  `json:"competitors,omitempty"`
-	SupplyChain  []string  `json:"supply_chain,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID          int64     `json:"id"`
+	Symbol      string    `json:"symbol"`
+	Name        string    `json:"name"`
+	AssetType   string    `json:"asset_type"`
+	Industry    string    `json:"industry,omitempty"`
+	Products    []string  `json:"products,omitempty"`
+	Competitors []string  `json:"competitors,omitempty"`
+	SupplyChain []string  `json:"supply_chain,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type Position struct {
-	ID          int64      `json:"id"`
-	AccountID   int64      `json:"account_id"`
-	Instrument  Instrument `json:"instrument"`
-	Quantity    float64    `json:"quantity"`
-	AvgCost     float64    `json:"avg_cost"`
-	MarketPrice *float64   `json:"market_price,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID               int64      `json:"id"`
+	AccountID        int64      `json:"account_id"`
+	Instrument       Instrument `json:"instrument"`
+	Quantity         float64    `json:"quantity"`
+	AvgCost          float64    `json:"avg_cost"`
+	MarketPrice      *float64   `json:"market_price,omitempty"`
+	OperationGuideID *int64     `json:"operation_guide_id,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 type Trade struct {

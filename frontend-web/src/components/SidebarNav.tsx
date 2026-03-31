@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   Activity,
@@ -16,6 +16,9 @@ import {
 
 import { cn } from "@/lib/utils";
 import { toast } from "@/hooks/useToast";
+import Button from "@/components/ui/Button";
+import Input from "@/components/ui/Input";
+import Modal from "@/components/ui/Modal";
 import {
   createConversationSession,
   deleteConversationSession,
@@ -58,11 +61,39 @@ function inferTitleFromScene(scene: ConversationScene, count: number) {
   return `${SCENE_LABEL[scene]} ${count + 1}`;
 }
 
+const SESSION_TITLE_MAX = 64;
+
+type SessionDialogState =
+  | {
+      kind: "rename";
+      sessionId: string;
+      value: string;
+      fallbackLabel: string;
+      error: string;
+    }
+  | {
+      kind: "delete";
+      sessionId: string;
+      title: string;
+      error: string;
+    }
+  | null;
+
+function validateSessionTitle(value: string) {
+  const next = value.trim();
+  if (!next) return "会话名称不能为空";
+  if (next.length > SESSION_TITLE_MAX) return `会话名称不能超过 ${SESSION_TITLE_MAX} 个字符`;
+  return "";
+}
+
 export default function SidebarNav({ collapsed }: { collapsed?: boolean }) {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const [pageSessions, setPageSessions] = useState<ConversationSession[]>([]);
   const [loadingPageSessions, setLoadingPageSessions] = useState(false);
+  const [sessionDialog, setSessionDialog] = useState<SessionDialogState>(null);
+  const [dialogSubmitting, setDialogSubmitting] = useState(false);
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   const scene = SCENE_BY_PATH[pathname] ?? null;
   const activeByScene = usePageSessionStore((s) => s.activeByScene);
@@ -80,22 +111,27 @@ export default function SidebarNav({ collapsed }: { collapsed?: boolean }) {
     [activeByScene, scene]
   );
 
-  const reloadPageSessions = async (targetScene: ConversationScene) => {
-    setLoadingPageSessions(true);
-    try {
-      const data = await listConversationSessions(targetScene, 100, 0);
-      setPageSessions(data.items ?? []);
-      if (data.items.length > 0 && !activeByScene[targetScene]) {
-        setActive(targetScene, data.items[0].id);
+  const reloadPageSessions = useCallback(
+    async (targetScene: ConversationScene) => {
+      setLoadingPageSessions(true);
+      try {
+        const data = await listConversationSessions(targetScene, 100, 0);
+        const items = data.items ?? [];
+        setPageSessions(items);
+        const currentActive = usePageSessionStore.getState().activeByScene[targetScene];
+        if (items.length > 0 && !currentActive) {
+          setActive(targetScene, items[0].id);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "加载失败";
+        toast({ title: "会话加载失败", description: msg, durationMs: 4200 });
+        setPageSessions([]);
+      } finally {
+        setLoadingPageSessions(false);
       }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "加载失败";
-      toast({ title: "会话加载失败", description: msg, durationMs: 4200 });
-      setPageSessions([]);
-    } finally {
-      setLoadingPageSessions(false);
-    }
-  };
+    },
+    [setActive]
+  );
 
   useEffect(() => {
     if (!scene) return;
@@ -107,7 +143,60 @@ export default function SidebarNav({ collapsed }: { collapsed?: boolean }) {
     return () => {
       window.removeEventListener("genfu:conversation-updated", handler);
     };
+  }, [reloadPageSessions, scene]);
+
+  useEffect(() => {
+    setSessionDialog(null);
+    setDialogSubmitting(false);
   }, [scene]);
+
+  const closeSessionDialog = useCallback(() => {
+    if (dialogSubmitting) return;
+    setSessionDialog(null);
+  }, [dialogSubmitting]);
+
+  const submitRenameDialog = async () => {
+    if (!scene || !sessionDialog || sessionDialog.kind !== "rename") return;
+    const validationError = validateSessionTitle(sessionDialog.value);
+    if (validationError) {
+      setSessionDialog((prev) =>
+        prev && prev.kind === "rename" ? { ...prev, error: validationError } : prev
+      );
+      return;
+    }
+
+    setDialogSubmitting(true);
+    try {
+      await renameConversationSession(sessionDialog.sessionId, sessionDialog.value.trim());
+      setSessionDialog(null);
+      await reloadPageSessions(scene);
+      window.dispatchEvent(new Event("genfu:conversation-updated"));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "重命名失败";
+      setSessionDialog((prev) => (prev && prev.kind === "rename" ? { ...prev, error: msg } : prev));
+    } finally {
+      setDialogSubmitting(false);
+    }
+  };
+
+  const submitDeleteDialog = async () => {
+    if (!scene || !sessionDialog || sessionDialog.kind !== "delete") return;
+    setDialogSubmitting(true);
+    try {
+      await deleteConversationSession(sessionDialog.sessionId);
+      if (activePageSessionId === sessionDialog.sessionId) {
+        clearActive(scene);
+      }
+      setSessionDialog(null);
+      await reloadPageSessions(scene);
+      window.dispatchEvent(new Event("genfu:conversation-updated"));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "删除失败";
+      setSessionDialog((prev) => (prev && prev.kind === "delete" ? { ...prev, error: msg } : prev));
+    } finally {
+      setDialogSubmitting(false);
+    }
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -237,7 +326,8 @@ export default function SidebarNav({ collapsed }: { collapsed?: boolean }) {
                 <div className="space-y-1">
                   {pageSessions.map((s) => {
                     const active = s.id === activePageSessionId;
-                    const label = s.title || "未命名会话";
+                    const rawTitle = s.title ?? "";
+                    const label = rawTitle.trim() ? rawTitle : "未命名会话";
                     return (
                       <div key={s.id} className="rounded-lg px-1 py-1 hover:bg-muted/40">
                         <button
@@ -260,17 +350,14 @@ export default function SidebarNav({ collapsed }: { collapsed?: boolean }) {
                           <button
                             type="button"
                             className="text-[11px] text-muted-foreground hover:text-foreground"
-                            onClick={async () => {
-                              const next = window.prompt("重命名会话", label);
-                              if (!next || !next.trim()) return;
-                              try {
-                                await renameConversationSession(s.id, next.trim());
-                                await reloadPageSessions(scene);
-                                window.dispatchEvent(new Event("genfu:conversation-updated"));
-                              } catch (err) {
-                                const msg = err instanceof Error ? err.message : "重命名失败";
-                                toast({ title: "重命名失败", description: msg, durationMs: 4200 });
-                              }
+                            onClick={() => {
+                              setSessionDialog({
+                                kind: "rename",
+                                sessionId: s.id,
+                                value: rawTitle,
+                                fallbackLabel: label,
+                                error: "",
+                              });
                             }}
                           >
                             重命名
@@ -278,20 +365,13 @@ export default function SidebarNav({ collapsed }: { collapsed?: boolean }) {
                           <button
                             type="button"
                             className="text-[11px] text-destructive/80 hover:text-destructive"
-                            onClick={async () => {
-                              const ok = window.confirm("确认删除该会话？");
-                              if (!ok) return;
-                              try {
-                                await deleteConversationSession(s.id);
-                                if (activePageSessionId === s.id) {
-                                  clearActive(scene);
-                                }
-                                await reloadPageSessions(scene);
-                                window.dispatchEvent(new Event("genfu:conversation-updated"));
-                              } catch (err) {
-                                const msg = err instanceof Error ? err.message : "删除失败";
-                                toast({ title: "删除失败", description: msg, durationMs: 4200 });
-                              }
+                            onClick={() => {
+                              setSessionDialog({
+                                kind: "delete",
+                                sessionId: s.id,
+                                title: label,
+                                error: "",
+                              });
                             }}
                           >
                             删除
@@ -309,6 +389,85 @@ export default function SidebarNav({ collapsed }: { collapsed?: boolean }) {
           </div>
         ) : null}
       </nav>
+
+      <Modal
+        open={sessionDialog !== null}
+        onClose={closeSessionDialog}
+        initialFocusRef={sessionDialog?.kind === "rename" ? renameInputRef : undefined}
+        closeOnBackdropClick={!dialogSubmitting}
+      >
+        {sessionDialog?.kind === "rename" ? (
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitRenameDialog();
+            }}
+          >
+            <div>
+              <div className="text-sm font-semibold text-foreground">重命名会话</div>
+              <div className="mt-1 text-xs text-muted-foreground">更新后将用于后续会话记录展示。</div>
+            </div>
+            <div className="space-y-2">
+              <Input
+                ref={renameInputRef}
+                value={sessionDialog.value}
+                placeholder={sessionDialog.fallbackLabel}
+                maxLength={SESSION_TITLE_MAX}
+                disabled={dialogSubmitting}
+                aria-invalid={Boolean(sessionDialog.error)}
+                aria-describedby={sessionDialog.error ? "session-rename-error" : undefined}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setSessionDialog((prev) =>
+                    prev && prev.kind === "rename" ? { ...prev, value, error: "" } : prev
+                  );
+                }}
+              />
+              <div className="text-right text-[11px] text-muted-foreground">
+                {sessionDialog.value.trim().length}/{SESSION_TITLE_MAX}
+              </div>
+              {sessionDialog.error ? (
+                <div id="session-rename-error" className="text-xs text-destructive">
+                  {sessionDialog.error}
+                </div>
+              ) : null}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button type="button" size="sm" variant="secondary" onClick={closeSessionDialog} disabled={dialogSubmitting}>
+                取消
+              </Button>
+              <Button type="submit" size="sm" disabled={dialogSubmitting}>
+                {dialogSubmitting ? "保存中..." : "保存"}
+              </Button>
+            </div>
+          </form>
+        ) : sessionDialog?.kind === "delete" ? (
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitDeleteDialog();
+            }}
+          >
+            <div>
+              <div className="text-sm font-semibold text-foreground">删除会话</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                确认删除「{sessionDialog.title}」吗？该操作不可撤销。
+              </div>
+            </div>
+            {sessionDialog.error ? <div className="text-xs text-destructive">{sessionDialog.error}</div> : null}
+            <div className="flex justify-end gap-2">
+              <Button type="button" size="sm" variant="secondary" onClick={closeSessionDialog} disabled={dialogSubmitting}>
+                取消
+              </Button>
+              <Button type="submit" size="sm" variant="destructive" disabled={dialogSubmitting}>
+                {dialogSubmitting ? "删除中..." : "确认删除"}
+              </Button>
+            </div>
+          </form>
+        ) : null}
+      </Modal>
 
       <div className="border-t border-border/50 p-3">
         {!collapsed ? (

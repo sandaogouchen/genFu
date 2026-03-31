@@ -240,7 +240,6 @@ func (m *EinoChatModel) streamOnce(ctx context.Context, input []*schema.Message,
 			}
 			if len(choice.Delta.ToolCalls) > 0 {
 				mergeEinoToolCalls(buffers, choice.Delta.ToolCalls)
-				emit(toSchemaToolCallDelta(choice.Delta.ToolCalls), nil)
 			}
 		}
 	}
@@ -400,7 +399,7 @@ type einoStreamToolCallBuffer struct {
 	ID        string
 	Type      string
 	Name      string
-	Arguments strings.Builder
+	Arguments string
 }
 
 func mergeEinoToolCalls(buffers map[int]*einoStreamToolCallBuffer, calls []einoStreamToolCall) {
@@ -420,7 +419,7 @@ func mergeEinoToolCalls(buffers map[int]*einoStreamToolCallBuffer, calls []einoS
 			buf.Name = call.Function.Name
 		}
 		if call.Function.Arguments != "" {
-			buf.Arguments.WriteString(call.Function.Arguments)
+			buf.Arguments = mergeToolCallArguments(buf.Arguments, call.Function.Arguments)
 		}
 	}
 }
@@ -447,7 +446,7 @@ func buildEinoStreamToolCalls(buffers map[int]*einoStreamToolCallBuffer) *schema
 			Type:  buf.Type,
 			Function: schema.FunctionCall{
 				Name:      buf.Name,
-				Arguments: strings.TrimSpace(buf.Arguments.String()),
+				Arguments: normalizeToolCallArguments(buf.Arguments),
 			},
 		}
 		toolCalls = append(toolCalls, call)
@@ -477,6 +476,64 @@ func toSchemaToolCallDelta(calls []einoStreamToolCall) *schema.Message {
 		toolCalls = append(toolCalls, tc)
 	}
 	return &schema.Message{Role: schema.Assistant, ToolCalls: toolCalls}
+}
+
+func mergeToolCallArguments(current string, chunk string) string {
+	current = strings.TrimSpace(current)
+	chunk = strings.TrimSpace(chunk)
+	if chunk == "" {
+		return current
+	}
+	if current == "" {
+		return chunk
+	}
+	// Provider-specific behavior differs: some stream incremental chunks, others stream cumulative values.
+	if strings.HasPrefix(chunk, current) {
+		return chunk
+	}
+	if strings.HasSuffix(current, chunk) {
+		return current
+	}
+	if strings.HasPrefix(chunk, "{") && strings.HasSuffix(chunk, "}") {
+		return chunk
+	}
+	return current + chunk
+}
+
+func normalizeToolCallArguments(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return raw
+	}
+	if json.Valid([]byte(raw)) {
+		return raw
+	}
+
+	dec := json.NewDecoder(strings.NewReader(raw))
+	var (
+		last   interface{}
+		hasAny bool
+	)
+	for {
+		var value interface{}
+		err := dec.Decode(&value)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			hasAny = false
+			break
+		}
+		last = value
+		hasAny = true
+	}
+	if hasAny {
+		payload, err := json.Marshal(last)
+		if err == nil {
+			return string(payload)
+		}
+	}
+	return raw
 }
 
 func toEinoChatMessage(msg *schema.Message) einoChatMessage {

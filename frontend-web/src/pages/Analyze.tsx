@@ -7,6 +7,7 @@ import Markdown from "@/components/conversation/Markdown";
 import type { PromptTemplate } from "@/components/conversation/TemplateChips";
 import TipCard from "@/components/conversation/TipCard";
 import UserBubble from "@/components/conversation/UserBubble";
+import Button from "@/components/ui/Button";
 import { toast } from "@/hooks/useToast";
 import { usePageSessionStore } from "@/stores/pageSessionStore";
 import type { AnalyzeResponse, AnalyzeStep, ConversationRun } from "@/utils/genfuApi";
@@ -25,6 +26,8 @@ type AnalyzeRun = {
   summary: AnalyzeResponse | null;
   error?: string;
 };
+
+const LOCAL_ANALYZE_SESSION_PREFIX = "local_analyze_";
 
 function parseAnalyzePrompt(prompt: string): AnalyzeDraft {
   const raw = prompt.trim();
@@ -54,6 +57,19 @@ function parseAnalyzePrompt(prompt: string): AnalyzeDraft {
   const rest = raw.replace(symbol, " ").replace(/分析|analyze|股票|stock|基金|fund/gi, " ").trim();
   const name = rest.replace(/\s+/g, " ").trim();
   return { type, symbol, name: name || undefined };
+}
+
+function buildLocalAnalyzeSessionId() {
+  return `${LOCAL_ANALYZE_SESSION_PREFIX}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function isLocalAnalyzeSession(sessionId: string) {
+  return sessionId.startsWith(LOCAL_ANALYZE_SESSION_PREFIX);
+}
+
+function isSessionNotFoundError(message: string) {
+  const m = message.trim().toLowerCase();
+  return m.includes("session_not_found") || m.includes("http 404");
 }
 
 function getRecord(v: unknown): Record<string, unknown> {
@@ -92,6 +108,7 @@ function toAnalyzeRun(run: ConversationRun): AnalyzeRun {
 
 export default function Analyze() {
   const abortRef = useRef<AbortController | null>(null);
+  const sessionInitRef = useRef<Promise<string> | null>(null);
   const activeByScene = usePageSessionStore((s) => s.activeByScene);
   const setActive = usePageSessionStore((s) => s.setActive);
   const sessionId = activeByScene.analyze ?? "";
@@ -99,6 +116,10 @@ export default function Analyze() {
   const [input, setInput] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [runs, setRuns] = useState<AnalyzeRun[]>([]);
+  const [sessionInitLoading, setSessionInitLoading] = useState(false);
+  const [sessionInitError, setSessionInitError] = useState<string>("");
+
+  const usingLocalSession = useMemo(() => isLocalAnalyzeSession(sessionId), [sessionId]);
 
   const loadRuns = useCallback(async (sid: string) => {
     if (!sid) {
@@ -110,32 +131,84 @@ export default function Analyze() {
       setRuns((data.items ?? []).map(toAnalyzeRun));
     } catch (err) {
       const msg = err instanceof Error ? err.message : "加载失败";
+      if (isLocalAnalyzeSession(sid) && isSessionNotFoundError(msg)) {
+        setRuns([]);
+        return;
+      }
       toast({ title: "加载会话失败", description: msg, durationMs: 4200 });
       setRuns([]);
     }
   }, []);
 
-  useEffect(() => {
-    if (sessionId) return;
-    let canceled = false;
-    (async () => {
-      try {
-        const created = await createConversationSession({ scene: "analyze", title: "分析日志 1" });
-        if (!canceled) {
+  const activateLocalSession = useCallback(() => {
+    if (sessionId && isLocalAnalyzeSession(sessionId)) {
+      return sessionId;
+    }
+    const localId = buildLocalAnalyzeSessionId();
+    setActive("analyze", localId);
+    setSessionInitError("");
+    window.dispatchEvent(new Event("genfu:conversation-updated"));
+    toast({
+      title: "已启用本地临时会话",
+      description: "网络恢复后可重试创建云端会话。",
+      durationMs: 4200,
+    });
+    return localId;
+  }, [sessionId, setActive]);
+
+  const startSessionInit = useCallback(
+    async (options?: { allowFallback?: boolean; silent?: boolean; force?: boolean }) => {
+      const force = options?.force ?? false;
+      if (sessionId && !(force && isLocalAnalyzeSession(sessionId))) {
+        return sessionId;
+      }
+
+      const allowFallback = options?.allowFallback ?? false;
+      const silent = options?.silent ?? false;
+      if (sessionInitRef.current) {
+        const existing = await sessionInitRef.current;
+        if (existing) return existing;
+        return allowFallback ? activateLocalSession() : "";
+      }
+
+      const task = (async () => {
+        setSessionInitLoading(true);
+        setSessionInitError("");
+        try {
+          const created = await createConversationSession(
+            { scene: "analyze", title: "分析日志 1" },
+            { retries: 2, initialDelayMs: 450, maxDelayMs: 2600 }
+          );
           setActive("analyze", created.id);
           window.dispatchEvent(new Event("genfu:conversation-updated"));
-        }
-      } catch (err) {
-        if (!canceled) {
+          return created.id;
+        } catch (err) {
           const msg = err instanceof Error ? err.message : "创建会话失败";
-          toast({ title: "创建会话失败", description: msg, durationMs: 4200 });
+          setSessionInitError(msg);
+          if (!silent) {
+            toast({ title: "创建会话失败", description: msg, durationMs: 4200 });
+          }
+          return "";
+        } finally {
+          setSessionInitLoading(false);
         }
+      })();
+
+      sessionInitRef.current = task;
+      const sid = await task;
+      if (sessionInitRef.current === task) {
+        sessionInitRef.current = null;
       }
-    })();
-    return () => {
-      canceled = true;
-    };
-  }, [sessionId, setActive]);
+      if (sid) return sid;
+      return allowFallback ? activateLocalSession() : "";
+    },
+    [sessionId, setActive, activateLocalSession]
+  );
+
+  useEffect(() => {
+    if (sessionId) return;
+    void startSessionInit({ allowFallback: false, silent: true });
+  }, [sessionId, startSessionInit]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -172,6 +245,49 @@ export default function Analyze() {
         <span className="font-mono text-accent">分析基金 161725</span>。也支持直接粘贴 JSON：
         <span className="font-mono text-accent">{"{\"type\":\"stock\",\"symbol\":\"600519\"}"}</span>。
       </TipCard>
+
+      {!sessionId ? (
+        <div className="rounded-2xl border border-warning/40 bg-warning/10 p-4">
+          <div className="text-sm font-semibold text-foreground">
+            {sessionInitLoading ? "会话初始化中…" : "会话未就绪"}
+          </div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            {sessionInitError
+              ? `最近一次失败：${sessionInitError}`
+              : "将自动重试；也可手动重试或降级为本地临时会话。"}
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              disabled={sessionInitLoading}
+              onClick={() => {
+                void startSessionInit({ allowFallback: false });
+              }}
+            >
+              {sessionInitLoading ? "重试中…" : "重试创建会话"}
+            </Button>
+            <Button size="sm" variant="secondary" disabled={sessionInitLoading} onClick={activateLocalSession}>
+              使用本地临时会话
+            </Button>
+          </div>
+        </div>
+      ) : usingLocalSession ? (
+        <div className="rounded-2xl border border-warning/40 bg-warning/10 p-4">
+          <div className="text-sm font-semibold text-foreground">当前使用本地临时会话</div>
+          <div className="mt-1 text-xs text-muted-foreground">可继续分析；恢复网络后可重试创建云端会话。</div>
+          <div className="mt-3">
+            <Button
+              size="sm"
+              disabled={sessionInitLoading}
+              onClick={() => {
+                void startSessionInit({ allowFallback: false, force: true });
+              }}
+            >
+              {sessionInitLoading ? "重试中…" : "重试创建云端会话"}
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="space-y-5">
         {runs.map((r) => (
@@ -216,10 +332,15 @@ export default function Analyze() {
         templates={templates}
         onSubmit={async () => {
           if (!canSubmit) return;
-          if (!sessionId) {
-            toast({ title: "请稍候", description: "会话初始化中" });
+          let sid = sessionId;
+          if (!sid) {
+            sid = await startSessionInit({ allowFallback: true, silent: true });
+          }
+          if (!sid) {
+            toast({ title: "会话不可用", description: "请重试创建会话或切换本地临时会话", durationMs: 5200 });
             return;
           }
+
           const prompt = input.trim();
           setInput("");
 
@@ -244,7 +365,7 @@ export default function Analyze() {
               "/sse/analyze",
               {
                 ...req,
-                session_id: sessionId,
+                session_id: sid,
                 session_title: prompt.slice(0, 20),
                 prompt,
               },
@@ -261,13 +382,13 @@ export default function Analyze() {
                 throw new Error(payload.step ? `${payload.step}: ${payload.error ?? "error"}` : payload.error ?? "error");
               }
             }
-            await loadRuns(sessionId);
+            await loadRuns(sid);
             window.dispatchEvent(new Event("genfu:conversation-updated"));
             toast({ title: "分析完成", description: "已完成流式分析" });
           } catch (e) {
             const err = e instanceof Error ? e.message : "unknown_error";
             setRuns((xs) => xs.map((x) => (x.id === tempId ? { ...x, error: err } : x)));
-            await loadRuns(sessionId);
+            await loadRuns(sid);
             window.dispatchEvent(new Event("genfu:conversation-updated"));
             toast({ title: "分析失败", description: err, durationMs: 5200 });
           } finally {

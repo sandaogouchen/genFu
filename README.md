@@ -106,6 +106,7 @@ sqlite3 genfu.db < internal/db/seed.sql
 - `POST /api/investment` 持仓与交易操作（工具动作）
 - `POST /api/decision` 交易决策（同步返回）
 - `POST /sse/decision` 交易决策（SSE流式返回）
+- `GET /api/operation-guides?symbol=600519` 按代码查询历史买卖指南
 - `POST /api/workflow/stock` Stock/Fund 工作流（同步）
 - `POST /sse/workflow/stock` Stock/Fund 工作流（SSE流式）
 - `GET /openapi.json` OpenAPI 文档
@@ -247,6 +248,8 @@ sqlite3 genfu.db < internal/db/seed.sql
 ### 流式事件
 
 ```json
+{ "type": "session", "delta": "session-id" }
+{ "type": "intent", "intent": { "intent": "general_chat", "workflow": "workflow_chat_general", "confidence": 0.93 } }
 { "type": "delta", "delta": "收到" }
 { "type": "message", "message": { "role": "assistant", "content": "收到: call:echo 你好" } }
 { "type": "tool_call", "tool_call": { "name": "echo", "arguments": { "text": "call:echo 你好" } } }
@@ -349,14 +352,35 @@ SSE错误事件会包含 `error` 与 `step` 字段，便于定位失败步骤。
 
 ## 交易决策接口
 
-说明：前端只需提供分析报告ID（可选）与账户ID（可选），持仓/大盘/新闻由后端获取。新闻仅使用 config.news.keywords 进行关键词检索，未命中则不携带新闻。
+说明：前端可提供分析报告ID（可选）、账户ID（可选）与持仓买卖指南选择（可选）。持仓/大盘/新闻由后端获取；若传入 `guide_selections`，后端会校验并写回持仓默认指南。
+
+决策执行工作流已升级为闭环：
+`候选决策 -> 风险预算 -> 交易指令 -> 执行 -> 复盘写回`。
+
+响应在保留旧字段 `decision/signals/executions` 的同时新增：
+- `run_id`
+- `risk_budget`
+- `planned_orders`
+- `guarded_orders`
+- `review`
+- `warnings`
+
+`meta` 可覆盖风险预算参数（可选）：
+- `risk.max_single_order_ratio`
+- `risk.max_symbol_exposure_ratio`
+- `risk.max_daily_trade_ratio`
+- `risk.min_confidence`
 
 ### 请求示例（同步）
 
 ```json
 {
   "report_ids": [101, 102],
-  "account_id": 1
+  "account_id": 1,
+  "guide_selections": [
+    { "symbol": "600519", "guide_id": 12 },
+    { "symbol": "161725", "guide_id": 35 }
+  ]
 }
 ```
 
@@ -365,9 +389,16 @@ SSE错误事件会包含 `error` 与 `step` 字段，便于定位失败步骤。
 ```bash
 curl -N -X POST http://localhost:8080/sse/decision -H 'Content-Type: application/json' -d '{
   "report_ids": [101, 102],
-  "account_id": 1
+  "account_id": 1,
+  "guide_selections": [{"symbol":"600519","guide_id":12}]
 }'
 ```
+
+SSE 在保留 `decision/signals/executions/complete` 的基础上新增事件：
+- `risk_budget`
+- `planned_orders`
+- `guarded_orders`
+- `review`
 
 ## 目录结构
 

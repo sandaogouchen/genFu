@@ -110,7 +110,16 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = writeEvent("decision", resp.Decision)
+	_ = writeEvent("risk_budget", resp.RiskBudget)
+	_ = writeEvent("planned_orders", resp.PlannedOrders)
+	_ = writeEvent("guarded_orders", resp.GuardedOrders)
 	_ = writeEvent("signals", resp.Signals)
 	_ = writeEvent("executions", resp.Executions)
+	if resp.Review != nil {
+		_ = writeEvent("review", resp.Review)
+	}
+	if len(resp.Warnings) > 0 {
+		_ = writeEvent("warnings", resp.Warnings)
+	}
 	_ = writeEvent("complete", map[string]bool{"done": true})
 }

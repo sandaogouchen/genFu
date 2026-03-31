@@ -161,17 +161,17 @@ func (r *Repository) ListBriefsByKeywords(ctx context.Context, keywords []string
 
 // EventQuery represents news event query parameters
 type EventQuery struct {
-	Page         int
-	PageSize     int
-	Domains      []EventDomain
-	EventTypes   []string
-	Sentiment    string
-	DateFrom     *time.Time
-	DateTo       *time.Time
-	Keywords     []string
-	SourceType   SourceType
-	MinPriority  int
-	SortBy       string
+	Page        int
+	PageSize    int
+	Domains     []EventDomain
+	EventTypes  []string
+	Sentiment   string
+	DateFrom    *time.Time
+	DateTo      *time.Time
+	Keywords    []string
+	SourceType  SourceType
+	MinPriority int
+	SortBy      string
 }
 
 // CreateEvent creates a news event
@@ -371,7 +371,11 @@ func (r *Repository) ListEvents(ctx context.Context, query EventQuery) ([]NewsEv
 		_ = json.Unmarshal(labelsJSON, &event.Labels)
 		_ = json.Unmarshal(relatedJSON, &event.RelatedSources)
 		if len(funnelJSON) > 0 {
-			_ = json.Unmarshal(funnelJSON, &event.FunnelResult)
+			if json.Valid(funnelJSON) {
+				_ = json.Unmarshal(funnelJSON, &event.FunnelResult)
+			} else {
+				log.Printf("[Repository.ListEvents] 跳过无效funnel_result JSON event_id=%d", event.DBID)
+			}
 		}
 
 		// 将数据库 ID 转换为字符串赋值给 ID 字段，前端需要
@@ -423,7 +427,11 @@ func (r *Repository) GetEventByID(ctx context.Context, id int64) (NewsEvent, err
 	_ = json.Unmarshal(labelsJSON, &event.Labels)
 	_ = json.Unmarshal(relatedJSON, &event.RelatedSources)
 	if len(funnelJSON) > 0 {
-		_ = json.Unmarshal(funnelJSON, &event.FunnelResult)
+		if json.Valid(funnelJSON) {
+			_ = json.Unmarshal(funnelJSON, &event.FunnelResult)
+		} else {
+			log.Printf("[Repository.GetEventByID] 跳过无效funnel_result JSON event_id=%d", event.DBID)
+		}
 	}
 
 	// 将数据库 ID 转换为字符串赋值给 ID 字段，前端需要

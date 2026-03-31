@@ -14,12 +14,12 @@ type EventDomain string
 
 const (
 	DomainMacro        EventDomain = "macro"        // Macroeconomics: central banks, economic data, fiscal policy
-	DomainGeopolitical EventDomain = "geopolitical"  // Geopolitics: military conflicts, sanctions, diplomacy
-	DomainIndustry     EventDomain = "industry"      // Industry: technology breakthroughs, supply chain, capacity
-	DomainCorporate    EventDomain = "corporate"     // Corporate: earnings, M&A, management, products
-	DomainRegulatory   EventDomain = "regulatory"    // Regulatory: policy releases, investigations, approvals
-	DomainMarket       EventDomain = "market"        // Market behavior: analyst ratings, fund flows, anomalies
-	DomainTechnology   EventDomain = "technology"    // Technology: AI models, chips, biotech
+	DomainGeopolitical EventDomain = "geopolitical" // Geopolitics: military conflicts, sanctions, diplomacy
+	DomainIndustry     EventDomain = "industry"     // Industry: technology breakthroughs, supply chain, capacity
+	DomainCorporate    EventDomain = "corporate"    // Corporate: earnings, M&A, management, products
+	DomainRegulatory   EventDomain = "regulatory"   // Regulatory: policy releases, investigations, approvals
+	DomainMarket       EventDomain = "market"       // Market behavior: analyst ratings, fund flows, anomalies
+	DomainTechnology   EventDomain = "technology"   // Technology: AI models, chips, biotech
 )
 
 // AllDomains contains all level 1 event domains
@@ -80,18 +80,18 @@ const (
 
 // RawNews represents a raw news item (after collection, before processing)
 type RawNews struct {
-	ID          string     `json:"id"`
-	Title       string     `json:"title"`
-	Summary     string     `json:"summary"`
-	Content     string     `json:"content"`
-	Source      string     `json:"source"`
-	SourceType  SourceType `json:"source_type"`
-	URL         string     `json:"url"`
-	PublishedAt time.Time  `json:"published_at"`
-	CollectedAt time.Time  `json:"collected_at"`
-	Language    string     `json:"language"` // "zh" / "en"
-	TitleHash      string   `json:"title_hash"`
-	RelatedSources []string `json:"related_sources,omitempty"`
+	ID             string     `json:"id"`
+	Title          string     `json:"title"`
+	Summary        string     `json:"summary"`
+	Content        string     `json:"content"`
+	Source         string     `json:"source"`
+	SourceType     SourceType `json:"source_type"`
+	URL            string     `json:"url"`
+	PublishedAt    time.Time  `json:"published_at"`
+	CollectedAt    time.Time  `json:"collected_at"`
+	Language       string     `json:"language"` // "zh" / "en"
+	TitleHash      string     `json:"title_hash"`
+	RelatedSources []string   `json:"related_sources,omitempty"`
 }
 
 // ──────────────────────────────────────────────
@@ -101,15 +101,15 @@ type RawNews struct {
 // NewsEvent represents a classified and labeled news event
 type NewsEvent struct {
 	// Basic info
-	ID          string    `json:"id"`
-	Title       string    `json:"title"`
-	Summary     string    `json:"summary"`
-	Content     string    `json:"content"`
-	Source      string    `json:"source"`
+	ID          string     `json:"id"`
+	Title       string     `json:"title"`
+	Summary     string     `json:"summary"`
+	Content     string     `json:"content"`
+	Source      string     `json:"source"`
 	SourceType  SourceType `json:"source_type"`
-	URL         string    `json:"url"`
-	PublishedAt time.Time `json:"published_at"`
-	ProcessedAt time.Time `json:"processed_at"`
+	URL         string     `json:"url"`
+	PublishedAt time.Time  `json:"published_at"`
+	ProcessedAt time.Time  `json:"processed_at"`
 
 	// Classification info (multi-label)
 	Domains    []EventDomain `json:"domains"`     // Level 1 domains (can be multiple)
@@ -140,11 +140,11 @@ type NewsEvent struct {
 
 // LabelSet represents complete multi-dimensional label set
 type LabelSet struct {
-	Sentiment      float64        `json:"sentiment"`       // Sentiment score -1.0 ~ +1.0
-	Novelty        Novelty        `json:"novelty"`         // Novelty
-	Predictability Predictability `json:"predictability"`  // Predictability
-	Timeframe      Timeframe      `json:"timeframe"`       // Timeframe
-	Entities       []EntityLabel  `json:"entities"`        // Entity labels
+	Sentiment      float64        `json:"sentiment"`      // Sentiment score -1.0 ~ +1.0
+	Novelty        Novelty        `json:"novelty"`        // Novelty
+	Predictability Predictability `json:"predictability"` // Predictability
+	Timeframe      Timeframe      `json:"timeframe"`      // Timeframe
+	Entities       []EntityLabel  `json:"entities"`       // Entity labels
 }
 
 // SentimentLevel maps continuous sentiment score to discrete level
@@ -155,7 +155,7 @@ const (
 	SentimentNegative     SentimentLevel = "negative"      // -0.6 ~ -0.2
 	SentimentNeutral      SentimentLevel = "neutral"       // -0.2 ~ +0.2
 	SentimentPositive     SentimentLevel = "positive"      // +0.2 ~ +0.6
-	SentimentVeryPositive SentimentLevel = "very_positive"  // > +0.6
+	SentimentVeryPositive SentimentLevel = "very_positive" // > +0.6
 )
 
 // ToSentimentLevel converts sentiment score to discrete level
@@ -178,10 +178,10 @@ func ToSentimentLevel(score float64) SentimentLevel {
 type Novelty string
 
 const (
-	NoveltyBreaking  Novelty = "breaking"   // Breaking news
-	NoveltyFollowUp  Novelty = "follow_up"  // Follow-up report
-	NoveltyRecurring Novelty = "recurring"  // Recurring news
-	NoveltyOldNews   Novelty = "old_news"   // Old news
+	NoveltyBreaking  Novelty = "breaking"  // Breaking news
+	NoveltyFollowUp  Novelty = "follow_up" // Follow-up report
+	NoveltyRecurring Novelty = "recurring" // Recurring news
+	NoveltyOldNews   Novelty = "old_news"  // Old news
 )
 
 // Predictability represents predictability
@@ -241,6 +241,13 @@ type FunnelResult struct {
 
 	// L3: Deep causal chain analysis
 	L3Analysis *CausalAnalysis `json:"l3_analysis,omitempty"`
+
+	// Risk-input upgrade fields (backward compatible extension)
+	EventEntities       []EntityLabel                `json:"event_entities,omitempty"`
+	ImpactMapping       *ImpactMapping               `json:"impact_mapping,omitempty"`
+	ExposureMapping     []PortfolioExposure          `json:"exposure_mapping,omitempty"`
+	CausalVerification  *CausalVerification          `json:"causal_verification,omitempty"`
+	MonitoringSignalsV2 []StructuredMonitoringSignal `json:"monitoring_signals_v2,omitempty"`
 }
 
 // Relevance represents L2 relevance level
@@ -273,6 +280,107 @@ const (
 	DirectionUncertain Direction = "uncertain"
 )
 
+// ImpactLevel represents impact magnitude level.
+type ImpactLevel string
+
+const (
+	ImpactLevelWeak     ImpactLevel = "weak"
+	ImpactLevelModerate ImpactLevel = "moderate"
+	ImpactLevelStrong   ImpactLevel = "strong"
+)
+
+// VerificationVerdict represents causal-chain verification result.
+type VerificationVerdict string
+
+const (
+	VerificationVerdictPassed  VerificationVerdict = "passed"
+	VerificationVerdictWeak    VerificationVerdict = "weak"
+	VerificationVerdictInvalid VerificationVerdict = "invalid"
+)
+
+// ExposureBucket represents portfolio bucket.
+type ExposureBucket string
+
+const (
+	ExposureBucketHolding   ExposureBucket = "holding"
+	ExposureBucketWatchlist ExposureBucket = "watchlist"
+)
+
+// ExposureRelation represents the relation between event entity and portfolio asset.
+type ExposureRelation string
+
+const (
+	ExposureRelationDirect     ExposureRelation = "direct"
+	ExposureRelationProduct    ExposureRelation = "product"
+	ExposureRelationCompetitor ExposureRelation = "competitor"
+	ExposureRelationSupply     ExposureRelation = "supply"
+	ExposureRelationTheme      ExposureRelation = "theme"
+	ExposureRelationMacro      ExposureRelation = "macro"
+	ExposureRelationUnknown    ExposureRelation = "unknown"
+)
+
+// SignalOperator represents monitoring threshold operator.
+type SignalOperator string
+
+const (
+	SignalOperatorGreaterThan        SignalOperator = "gt"
+	SignalOperatorGreaterThanOrEqual SignalOperator = "gte"
+	SignalOperatorLessThan           SignalOperator = "lt"
+	SignalOperatorLessThanOrEqual    SignalOperator = "lte"
+	SignalOperatorEqual              SignalOperator = "eq"
+)
+
+// ImpactMapping represents event -> entity -> impact mapping output.
+type ImpactMapping struct {
+	EventSummary      string                       `json:"event_summary"`
+	Items             []ImpactItem                 `json:"items,omitempty"`
+	MonitoringSignals []StructuredMonitoringSignal `json:"monitoring_signals,omitempty"`
+}
+
+// ImpactItem represents directional impact on a target entity.
+type ImpactItem struct {
+	EntityName  string      `json:"entity_name"`
+	EntityCode  string      `json:"entity_code,omitempty"`
+	Direction   Direction   `json:"direction"`
+	ImpactScore float64     `json:"impact_score"` // -1.0 ~ +1.0
+	ImpactLevel ImpactLevel `json:"impact_level"`
+	Confidence  float64     `json:"confidence"`
+	Rationale   string      `json:"rationale,omitempty"`
+}
+
+// PortfolioExposure represents mapped exposure from an impact item to portfolio assets.
+type PortfolioExposure struct {
+	AssetName      string           `json:"asset_name"`
+	AssetCode      string           `json:"asset_code,omitempty"`
+	Bucket         ExposureBucket   `json:"bucket"`
+	Relation       ExposureRelation `json:"relation"`
+	Direction      Direction        `json:"direction"`
+	ImpactScore    float64          `json:"impact_score"`
+	ExposureScore  float64          `json:"exposure_score"`
+	PositionWeight float64          `json:"position_weight,omitempty"`
+	Confidence     float64          `json:"confidence"`
+	Rationale      string           `json:"rationale,omitempty"`
+}
+
+// CausalVerification represents verifier output.
+type CausalVerification struct {
+	Verdict    VerificationVerdict `json:"verdict"`
+	Score      float64             `json:"score"` // 0.0 ~ 1.0
+	Reason     string              `json:"reason,omitempty"`
+	Uncertains []string            `json:"uncertains,omitempty"`
+}
+
+// StructuredMonitoringSignal represents executable risk-monitoring signal.
+type StructuredMonitoringSignal struct {
+	Signal    string         `json:"signal"`
+	Metric    string         `json:"metric,omitempty"`
+	Operator  SignalOperator `json:"operator,omitempty"`
+	Threshold string         `json:"threshold,omitempty"`
+	Window    string         `json:"window,omitempty"`
+	Assets    []string       `json:"assets,omitempty"`
+	Reason    string         `json:"reason,omitempty"`
+}
+
 // ──────────────────────────────────────────────
 // Anchor Pool
 // ──────────────────────────────────────────────
@@ -281,15 +389,15 @@ const (
 type AnchorType string
 
 const (
-	AnchorHoldingDirect     AnchorType = "holding_direct"    // Holding direct (weight 1.0)
-	AnchorHoldingProduct    AnchorType = "holding_product"   // Holding product (0.9)
+	AnchorHoldingDirect     AnchorType = "holding_direct"     // Holding direct (weight 1.0)
+	AnchorHoldingProduct    AnchorType = "holding_product"    // Holding product (0.9)
 	AnchorHoldingCompetitor AnchorType = "holding_competitor" // Holding competitor (0.75)
-	AnchorHoldingSupply     AnchorType = "holding_supply"    // Holding supply chain (0.7)
-	AnchorWatchlist         AnchorType = "watchlist"         // Watchlist (0.8)
-	AnchorIndustryTheme     AnchorType = "industry_theme"    // Industry theme (0.6)
-	AnchorMacroFactor       AnchorType = "macro_factor"      // Macro factor (0.65)
-	AnchorGeneralRisk       AnchorType = "general_risk"      // General risk (0.8)
-	AnchorSafeHaven         AnchorType = "safe_haven"        // Safe haven signal (0.7)
+	AnchorHoldingSupply     AnchorType = "holding_supply"     // Holding supply chain (0.7)
+	AnchorWatchlist         AnchorType = "watchlist"          // Watchlist (0.8)
+	AnchorIndustryTheme     AnchorType = "industry_theme"     // Industry theme (0.6)
+	AnchorMacroFactor       AnchorType = "macro_factor"       // Macro factor (0.65)
+	AnchorGeneralRisk       AnchorType = "general_risk"       // General risk (0.8)
+	AnchorSafeHaven         AnchorType = "safe_haven"         // Safe haven signal (0.7)
 )
 
 // AnchorWeights represents default weights for anchor types
@@ -307,13 +415,13 @@ var AnchorWeights = map[AnchorType]float64{
 
 // Anchor represents anchor definition
 type Anchor struct {
-	ID           string      `json:"id"`
-	Type         AnchorType  `json:"type"`
-	Text         string      `json:"text"`         // Anchor text
-	Embedding    []float64   `json:"embedding"`     // Pre-computed embedding
-	Weight       float64     `json:"weight"`        // Weight
-	RelatedAsset string      `json:"related_asset"` // Related asset name
-	UpdatedAt    time.Time   `json:"updated_at"`
+	ID           string     `json:"id"`
+	Type         AnchorType `json:"type"`
+	Text         string     `json:"text"`          // Anchor text
+	Embedding    []float64  `json:"embedding"`     // Pre-computed embedding
+	Weight       float64    `json:"weight"`        // Weight
+	RelatedAsset string     `json:"related_asset"` // Related asset name
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 // AnchorMatch represents L1 anchor match result
@@ -334,7 +442,7 @@ type AnchorMatch struct {
 type CausalAnalysis struct {
 	EventSummary      string             `json:"event_summary"`
 	CausalChains      []CausalChain      `json:"causal_chains"`
-	CounterChains     []CausalChain      `json:"counter_chains"`     // Counter causal chains (required)
+	CounterChains     []CausalChain      `json:"counter_chains"` // Counter causal chains (required)
 	KeyUncertainties  []string           `json:"key_uncertainties"`
 	MonitoringSignals []string           `json:"monitoring_signals"`
 	CrossAssetImpacts []CrossAssetImpact `json:"cross_asset_impacts"`
@@ -381,10 +489,10 @@ type CrossAssetImpact struct {
 
 // PortfolioContext represents portfolio context injected into Pipeline
 type PortfolioContext struct {
-	Holdings        []Holding   `json:"holdings"`
-	Watchlist       []WatchItem `json:"watchlist"`
-	IndustryThemes  []string    `json:"industry_themes"`
-	MacroFactors    []string    `json:"macro_factors"`
+	Holdings       []Holding   `json:"holdings"`
+	Watchlist      []WatchItem `json:"watchlist"`
+	IndustryThemes []string    `json:"industry_themes"`
+	MacroFactors   []string    `json:"macro_factors"`
 }
 
 // Holding represents a holding position
@@ -392,9 +500,9 @@ type Holding struct {
 	Name        string   `json:"name"`
 	Code        string   `json:"code"`
 	Industry    string   `json:"industry"`
-	Weight      float64  `json:"weight"`      // Position weight
-	Products    []string `json:"products"`    // Products
-	Competitors []string `json:"competitors"` // Competitors
+	Weight      float64  `json:"weight"`       // Position weight
+	Products    []string `json:"products"`     // Products
+	Competitors []string `json:"competitors"`  // Competitors
 	SupplyChain []string `json:"supply_chain"` // Supply chain
 }
 
@@ -417,12 +525,12 @@ type Briefing struct {
 	Period      string      `json:"period"`
 
 	// Six modules
-	MacroOverview    MacroOverview        `json:"macro_overview"`
-	PortfolioImpact  []PortfolioImpactRow `json:"portfolio_impact"`
-	Opportunities    []OpportunityAlert   `json:"opportunities"`
-	RiskAlerts       []RiskAlert          `json:"risk_alerts"`
-	ConflictSignals  []ConflictSignal     `json:"conflict_signals"`
-	MonitoringItems  []MonitoringItem     `json:"monitoring_items"`
+	MacroOverview   MacroOverview        `json:"macro_overview"`
+	PortfolioImpact []PortfolioImpactRow `json:"portfolio_impact"`
+	Opportunities   []OpportunityAlert   `json:"opportunities"`
+	RiskAlerts      []RiskAlert          `json:"risk_alerts"`
+	ConflictSignals []ConflictSignal     `json:"conflict_signals"`
+	MonitoringItems []MonitoringItem     `json:"monitoring_items"`
 
 	// Metadata
 	TotalNewsProcessed int `json:"total_news_processed"`
@@ -435,10 +543,10 @@ type Briefing struct {
 type TriggerType string
 
 const (
-	TriggerPreMarket  TriggerType = "pre_market"   // Before market open (daily 8:30)
-	TriggerIntraday   TriggerType = "intraday"     // Intraday scheduled (every 30 min)
-	TriggerBreaking   TriggerType = "breaking"     // Breaking event (priority=5 breaking)
-	TriggerManual     TriggerType = "manual"       // Manual trigger
+	TriggerPreMarket TriggerType = "pre_market" // Before market open (daily 8:30)
+	TriggerIntraday  TriggerType = "intraday"   // Intraday scheduled (every 30 min)
+	TriggerBreaking  TriggerType = "breaking"   // Breaking event (priority=5 breaking)
+	TriggerManual    TriggerType = "manual"     // Manual trigger
 )
 
 // MacroOverview represents macro overview module
@@ -463,14 +571,14 @@ type PortfolioImpactRow struct {
 	RelatedEvents []string  `json:"related_events"`
 	NetDirection  Direction `json:"net_direction"`
 	Confidence    float64   `json:"confidence"`
-	Urgency       string    `json:"urgency"` // immediate / today / this_week / monitor
-	Action        string    `json:"action"`  // Recommended action
+	Urgency       string    `json:"urgency"`    // immediate / today / this_week / monitor
+	Action        string    `json:"action"`     // Recommended action
 	KeyCausal     string    `json:"key_causal"` // Key causal chain (one sentence)
 }
 
 // OpportunityAlert represents opportunity discovery
 type OpportunityAlert struct {
-	Source       string    `json:"source"`        // L3/L2/watchlist
+	Source       string    `json:"source"` // L3/L2/watchlist
 	Asset        string    `json:"asset"`
 	AssetCode    string    `json:"asset_code,omitempty"`
 	Direction    Direction `json:"direction"`

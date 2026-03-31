@@ -153,6 +153,30 @@ func TestStockPickResponseJSON_WithoutStrategyGuideField(t *testing.T) {
 	}
 }
 
+func TestBuildPersistableGuide_FallbackToTradeGuide(t *testing.T) {
+	stock := &StockPick{
+		Symbol:            "600519",
+		Name:              "贵州茅台",
+		TradeGuideText:    "价格突破后买入，跌破支撑卖出",
+		TradeGuideJSON:    `{"asset_type":"stock","symbol":"600519","buy_rules":[{"rule_id":"BUY_1","indicator":"price","operator":">=","trigger_value":1650,"timeframe":"daily_close","weight":0.5,"note":"突破买入"}],"sell_rules":[{"rule_id":"SELL_1","indicator":"price","operator":"<=","trigger_value":1550,"timeframe":"daily_close","weight":0.5,"note":"跌破卖出"}],"risk_controls":{"stop_loss_price":1500,"take_profit_price":1750}}`,
+		TradeGuideVersion: "v1",
+	}
+
+	guide := buildPersistableGuide(stock, "pick_test")
+	if guide == nil {
+		t.Fatalf("guide should not be nil")
+	}
+	if guide.Symbol != "600519" || guide.PickID != "pick_test" {
+		t.Fatalf("unexpected symbol/pick_id: %s/%s", guide.Symbol, guide.PickID)
+	}
+	if len(guide.BuyConditions) == 0 || len(guide.SellConditions) == 0 {
+		t.Fatalf("buy/sell conditions should be generated")
+	}
+	if guide.TradeGuideText == "" || guide.TradeGuideJSON == "" {
+		t.Fatalf("trade guide fields should be preserved")
+	}
+}
+
 func boolPtr(v bool) *bool {
 	return &v
 }

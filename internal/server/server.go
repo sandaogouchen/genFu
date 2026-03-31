@@ -88,6 +88,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.Handle("/api/stockpicker", stockpickerHandler)
 		// Operation guide APIs
 		mux.HandleFunc("/api/operation-guide", stockpickerHandler.GetOperationGuide)
+		mux.HandleFunc("/api/operation-guides", stockpickerHandler.ListOperationGuidesBySymbol)
 		mux.HandleFunc("/api/operation-guide/", func(w http.ResponseWriter, r *http.Request) {
 			// Route to GetOperationGuideByID if path has ID
 			if strings.HasPrefix(r.URL.Path, "/api/operation-guide/") && len(strings.TrimPrefix(r.URL.Path, "/api/operation-guide/")) > 0 {

@@ -49,7 +49,25 @@ func (h *StockSSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	resp, err := h.service.Run(r.Context(), req)
+	resp, err := h.service.RunStream(r.Context(), req, func(event WorkflowStreamEvent) {
+		switch event.Type {
+		case "plan":
+			if event.Plan != nil {
+				writeSSE(w, flusher, "plan", event.Plan)
+			}
+		case "node_start":
+			writeSSE(w, flusher, "node_start", map[string]string{"node": event.Node})
+		case "node_delta":
+			writeSSE(w, flusher, "node_delta", map[string]string{"node": event.Node, "delta": event.Delta})
+		case "node_skip":
+			writeSSE(w, flusher, "node_skip", map[string]string{"node": event.Node, "reason": event.Reason})
+		case "node_complete":
+			writeSSE(w, flusher, "node_complete", map[string]string{"node": event.Node})
+			if event.Node != "" && event.Payload != nil {
+				writeSSE(w, flusher, event.Node, event.Payload)
+			}
+		}
+	})
 	if err != nil {
 		if h.logRepo != nil && sessionID != "" {
 			reqRaw, _ := json.Marshal(req)
@@ -58,14 +76,6 @@ func (h *StockSSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeSSE(w, flusher, "error", map[string]string{"error": err.Error()})
 		return
 	}
-	writeSSE(w, flusher, "holdings", resp.Holdings)
-	writeSSE(w, flusher, "holdings_market", resp.HoldingsMarket)
-	writeSSE(w, flusher, "target_market", resp.TargetMarket)
-	writeSSE(w, flusher, "news_summary", resp.News)
-	writeSSE(w, flusher, "bull", map[string]string{"content": resp.BullAnalysis})
-	writeSSE(w, flusher, "bear", map[string]string{"content": resp.BearAnalysis})
-	writeSSE(w, flusher, "debate", map[string]string{"content": resp.DebateAnalysis})
-	writeSSE(w, flusher, "summary", map[string]string{"content": resp.Summary})
 	writeSSE(w, flusher, "complete", map[string]bool{"done": true})
 	if h.logRepo != nil && sessionID != "" {
 		reqRaw, _ := json.Marshal(req)

@@ -162,14 +162,19 @@ func (r *Repository) SetPosition(ctx context.Context, accountID int64, instrumen
 			avg_cost = excluded.avg_cost,
 			market_price = excluded.market_price,
 			updated_at = CURRENT_TIMESTAMP
-		returning id, account_id, instrument_id, quantity, avg_cost, market_price, created_at, updated_at
+		returning id, account_id, instrument_id, quantity, avg_cost, market_price, operation_guide_id, created_at, updated_at
 	`, accountID, instrumentID, quantity, avgCost, marketPrice)
 	var p Position
 	var instrument Instrument
+	var operationGuideID sql.NullInt64
 	var createdRaw sql.NullString
 	var updatedRaw sql.NullString
-	if err := row.Scan(&p.ID, &p.AccountID, &instrument.ID, &p.Quantity, &p.AvgCost, &p.MarketPrice, &createdRaw, &updatedRaw); err != nil {
+	if err := row.Scan(&p.ID, &p.AccountID, &instrument.ID, &p.Quantity, &p.AvgCost, &p.MarketPrice, &operationGuideID, &createdRaw, &updatedRaw); err != nil {
 		return Position{}, err
+	}
+	if operationGuideID.Valid {
+		v := operationGuideID.Int64
+		p.OperationGuideID = &v
 	}
 	if parsed, ok := db.ParseTime(createdRaw); ok {
 		p.CreatedAt = parsed
@@ -283,13 +288,14 @@ func (r *Repository) RecordTradeAndUpdatePosition(ctx context.Context, accountID
 			avg_cost = excluded.avg_cost,
 			market_price = excluded.market_price,
 			updated_at = CURRENT_TIMESTAMP
-		returning id, account_id, instrument_id, quantity, avg_cost, market_price, created_at, updated_at
+		returning id, account_id, instrument_id, quantity, avg_cost, market_price, operation_guide_id, created_at, updated_at
 	`, accountID, instrumentID, nextQty, nextAvg, marketPrice)
 	var position Position
 	var market sql.NullFloat64
+	var operationGuideID sql.NullInt64
 	var createdRaw sql.NullString
 	var updatedRaw sql.NullString
-	if err := positionRow.Scan(&position.ID, &position.AccountID, &instrumentID, &position.Quantity, &position.AvgCost, &market, &createdRaw, &updatedRaw); err != nil {
+	if err := positionRow.Scan(&position.ID, &position.AccountID, &instrumentID, &position.Quantity, &position.AvgCost, &market, &operationGuideID, &createdRaw, &updatedRaw); err != nil {
 		_ = tx.Rollback()
 		return Trade{}, Position{}, err
 	}
@@ -302,6 +308,10 @@ func (r *Repository) RecordTradeAndUpdatePosition(ctx context.Context, accountID
 	if market.Valid {
 		v := market.Float64
 		position.MarketPrice = &v
+	}
+	if operationGuideID.Valid {
+		v := operationGuideID.Int64
+		position.OperationGuideID = &v
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -366,7 +376,7 @@ func (r *Repository) RecordValuation(ctx context.Context, accountID int64, total
 
 func (r *Repository) ListPositions(ctx context.Context, accountID int64) ([]Position, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		select p.id, p.account_id, p.instrument_id, p.quantity, p.avg_cost, p.market_price, p.created_at, p.updated_at
+		select p.id, p.account_id, p.instrument_id, p.quantity, p.avg_cost, p.market_price, p.operation_guide_id, p.created_at, p.updated_at
 		from positions p
 		where p.account_id = ?
 		order by p.updated_at desc
@@ -379,10 +389,15 @@ func (r *Repository) ListPositions(ctx context.Context, accountID int64) ([]Posi
 	for rows.Next() {
 		var p Position
 		var instrumentID int64
+		var operationGuideID sql.NullInt64
 		var createdRaw sql.NullString
 		var updatedRaw sql.NullString
-		if err := rows.Scan(&p.ID, &p.AccountID, &instrumentID, &p.Quantity, &p.AvgCost, &p.MarketPrice, &createdRaw, &updatedRaw); err != nil {
+		if err := rows.Scan(&p.ID, &p.AccountID, &instrumentID, &p.Quantity, &p.AvgCost, &p.MarketPrice, &operationGuideID, &createdRaw, &updatedRaw); err != nil {
 			return nil, err
+		}
+		if operationGuideID.Valid {
+			v := operationGuideID.Int64
+			p.OperationGuideID = &v
 		}
 		if parsed, ok := db.ParseTime(createdRaw); ok {
 			p.CreatedAt = parsed
@@ -405,15 +420,20 @@ func (r *Repository) ListPositions(ctx context.Context, accountID int64) ([]Posi
 
 func (r *Repository) GetPosition(ctx context.Context, accountID int64, instrumentID int64) (Position, error) {
 	row := r.db.QueryRowContext(ctx, `
-		select p.id, p.account_id, p.instrument_id, p.quantity, p.avg_cost, p.market_price, p.created_at, p.updated_at
+		select p.id, p.account_id, p.instrument_id, p.quantity, p.avg_cost, p.market_price, p.operation_guide_id, p.created_at, p.updated_at
 		from positions p
 		where p.account_id = ? and p.instrument_id = ?
 	`, accountID, instrumentID)
 	var p Position
+	var operationGuideID sql.NullInt64
 	var createdRaw sql.NullString
 	var updatedRaw sql.NullString
-	if err := row.Scan(&p.ID, &p.AccountID, &instrumentID, &p.Quantity, &p.AvgCost, &p.MarketPrice, &createdRaw, &updatedRaw); err != nil {
+	if err := row.Scan(&p.ID, &p.AccountID, &instrumentID, &p.Quantity, &p.AvgCost, &p.MarketPrice, &operationGuideID, &createdRaw, &updatedRaw); err != nil {
 		return Position{}, err
+	}
+	if operationGuideID.Valid {
+		v := operationGuideID.Int64
+		p.OperationGuideID = &v
 	}
 	if parsed, ok := db.ParseTime(createdRaw); ok {
 		p.CreatedAt = parsed
@@ -445,6 +465,74 @@ func (r *Repository) DeletePosition(ctx context.Context, accountID int64, instru
 		return errors.New("position_not_found")
 	}
 	return nil
+}
+
+func (r *Repository) SetPositionOperationGuideBySymbol(ctx context.Context, accountID int64, symbol string, guideID int64) error {
+	trimmedSymbol := strings.TrimSpace(symbol)
+	if accountID == 0 {
+		return errors.New("invalid_account_id")
+	}
+	if trimmedSymbol == "" {
+		return errors.New("empty_symbol")
+	}
+	if guideID <= 0 {
+		return errors.New("invalid_guide_id")
+	}
+	_, err := r.db.ExecContext(ctx, `
+		update positions
+		set operation_guide_id = ?, updated_at = CURRENT_TIMESTAMP
+		where account_id = ?
+		  and instrument_id in (
+			  select id from instruments where symbol = ?
+		  )
+	`, guideID, accountID, trimmedSymbol)
+	return err
+}
+
+func (r *Repository) EstimateAvailableCash(ctx context.Context, accountID int64) (float64, error) {
+	if accountID == 0 {
+		return 0, errors.New("invalid_account_id")
+	}
+	var flowSum sql.NullFloat64
+	if err := r.db.QueryRowContext(ctx, `
+		select
+			coalesce(sum(
+				case
+					when lower(flow_type) in ('withdraw', 'withdrawal', 'out', 'transfer_out') then -amount
+					else amount
+				end
+			), 0)
+		from cash_flows
+		where account_id = ?
+	`, accountID).Scan(&flowSum); err != nil {
+		return 0, err
+	}
+
+	var buyTotal sql.NullFloat64
+	var sellTotal sql.NullFloat64
+	if err := r.db.QueryRowContext(ctx, `
+		select
+			coalesce(sum(case when lower(side) = 'buy' then quantity * price + fee else 0 end), 0) as buy_total,
+			coalesce(sum(case when lower(side) = 'sell' then quantity * price - fee else 0 end), 0) as sell_total
+		from trades
+		where account_id = ?
+	`, accountID).Scan(&buyTotal, &sellTotal); err != nil {
+		return 0, err
+	}
+
+	flow := 0.0
+	if flowSum.Valid {
+		flow = flowSum.Float64
+	}
+	buy := 0.0
+	if buyTotal.Valid {
+		buy = buyTotal.Float64
+	}
+	sell := 0.0
+	if sellTotal.Valid {
+		sell = sellTotal.Float64
+	}
+	return flow + sell - buy, nil
 }
 
 func (r *Repository) ListTrades(ctx context.Context, accountID int64, limit int, offset int) ([]Trade, error) {

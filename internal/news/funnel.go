@@ -37,25 +37,39 @@ type LLMService interface {
 // Config represents three-layer funnel configuration
 type Config struct {
 	// L1 configuration
-	L1Threshold    float64    `json:"l1_threshold"`     // L1 weighted similarity threshold (default 0.40)
-	L1TopN         int        `json:"l1_top_n"`         // L1 output TopN (default 30)
+	L1Threshold float64 `json:"l1_threshold"` // L1 weighted similarity threshold (default 0.40)
+	L1TopN      int     `json:"l1_top_n"`     // L1 output TopN (default 30)
 
 	// L2 configuration
-	L2BatchSize    int        `json:"l2_batch_size"`    // L2 batch size (default 10)
-	L2MinRelevance Relevance  `json:"l2_min_relevance"` // L2 minimum relevance (default medium)
+	L2BatchSize    int       `json:"l2_batch_size"`    // L2 batch size (default 10)
+	L2MinRelevance Relevance `json:"l2_min_relevance"` // L2 minimum relevance (default medium)
 
 	// L3 configuration
-	L3MaxAnalyze   int        `json:"l3_max_analyze"`   // L3 max deep analysis count (default 5)
+	L3MaxAnalyze int `json:"l3_max_analyze"` // L3 max deep analysis count (default 5)
+
+	// Risk-input upgrade switches
+	EventImpactEnabled       bool    `json:"event_impact_enabled"`
+	CausalVerifierEnabled    bool    `json:"causal_verifier_enabled"`
+	EventImpactBatchSize     int     `json:"event_impact_batch_size"`
+	VerifierMaxAnalyze       int     `json:"verifier_max_analyze"`
+	VerifierWeakThreshold    float64 `json:"verifier_weak_threshold"`
+	VerifierInvalidThreshold float64 `json:"verifier_invalid_threshold"`
 }
 
 // DefaultConfig returns default configuration
 func DefaultConfig() Config {
 	return Config{
-		L1Threshold:    0.40,
-		L1TopN:         30,
-		L2BatchSize:    10,
-		L2MinRelevance: RelevanceMedium,
-		L3MaxAnalyze:   5,
+		L1Threshold:              0.40,
+		L1TopN:                   30,
+		L2BatchSize:              10,
+		L2MinRelevance:           RelevanceMedium,
+		L3MaxAnalyze:             5,
+		EventImpactEnabled:       true,
+		CausalVerifierEnabled:    true,
+		EventImpactBatchSize:     10,
+		VerifierMaxAnalyze:       5,
+		VerifierWeakThreshold:    0.6,
+		VerifierInvalidThreshold: 0.4,
 	}
 }
 
@@ -65,11 +79,13 @@ func DefaultConfig() Config {
 
 // Funnel represents three-layer funnel filter
 type Funnel struct {
-	config      Config
-	embedSvc    FunnelEmbeddingService
-	llmSvc      LLMService
-	anchorPool  *AnchorPool
-	portfolio   *PortfolioContext
+	config              Config
+	embedSvc            FunnelEmbeddingService
+	llmSvc              LLMService
+	anchorPool          *AnchorPool
+	portfolio           *PortfolioContext
+	eventImpactAgent    EventImpactAgent
+	causalVerifierAgent CausalVerifierAgent
 }
 
 // NewFunnel creates a three-layer funnel
@@ -97,6 +113,14 @@ type FunnelOption func(*Funnel)
 
 func WithFunnelConfig(c Config) FunnelOption {
 	return func(f *Funnel) { f.config = c }
+}
+
+func WithEventImpactAgent(agent EventImpactAgent) FunnelOption {
+	return func(f *Funnel) { f.eventImpactAgent = agent }
+}
+
+func WithCausalVerifierAgent(agent CausalVerifierAgent) FunnelOption {
+	return func(f *Funnel) { f.causalVerifierAgent = agent }
 }
 
 // ──────────────────────────────────────────────
@@ -153,16 +177,16 @@ func (ap *AnchorPool) BuildFromPortfolio(ctx context.Context, embedSvc FunnelEmb
 				})
 			}
 
-		// Supply chain anchors
-		for _, s := range h.SupplyChain {
-			anchors = append(anchors, Anchor{
-				ID:           fmt.Sprintf("supply_%s_%s", h.Code, sanitize(s)),
-				Type:         AnchorHoldingSupply,
-				Text:         s,
-				Weight:       AnchorWeights[AnchorHoldingSupply],
-				RelatedAsset: h.Name,
-			})
-		}
+			// Supply chain anchors
+			for _, s := range h.SupplyChain {
+				anchors = append(anchors, Anchor{
+					ID:           fmt.Sprintf("supply_%s_%s", h.Code, sanitize(s)),
+					Type:         AnchorHoldingSupply,
+					Text:         s,
+					Weight:       AnchorWeights[AnchorHoldingSupply],
+					RelatedAsset: h.Name,
+				})
+			}
 		}
 
 		// Watchlist anchors
@@ -526,13 +550,16 @@ type L2Result struct {
 }
 
 type L2AssetImpact struct {
-	Asset     string     `json:"asset"`
-	Code      string     `json:"code,omitempty"`
-	Direction Direction  `json:"direction"`
+	Asset     string    `json:"asset"`
+	Code      string    `json:"code,omitempty"`
+	Direction Direction `json:"direction"`
 }
 
 func (f *Funnel) layerTwo(ctx context.Context, events []*NewsEvent) ([]*NewsEvent, error) {
-	if len(events) == 0 || f.llmSvc == nil {
+	if len(events) == 0 {
+		return events, nil
+	}
+	if f.llmSvc == nil && (!f.config.EventImpactEnabled || f.eventImpactAgent == nil) {
 		return events, nil
 	}
 
@@ -559,62 +586,95 @@ func (f *Funnel) layerTwo(ctx context.Context, events []*NewsEvent) ([]*NewsEven
 }
 
 func (f *Funnel) processL2Batch(ctx context.Context, batch []*NewsEvent) ([]*NewsEvent, error) {
-	// Build System Prompt
-	systemPrompt := f.buildL2SystemPrompt()
-	userPrompt := f.buildL2UserPrompt(batch)
-
-	// Call LLM
-	response, err := f.llmSvc.ChatComplete(ctx, systemPrompt, userPrompt)
-	if err != nil {
-		return nil, fmt.Errorf("LLM call failed: %w", err)
-	}
-
-	// Parse JSON response
+	var l2Err error
 	var l2Resp L2Response
-	// Extract JSON (compatible with markdown code block wrapper)
-	jsonStr := extractJSON(response)
-	if err := json.Unmarshal([]byte(jsonStr), &l2Resp); err != nil {
-		return nil, fmt.Errorf("parsing LLM response: %w", err)
+
+	if f.llmSvc != nil {
+		// Build System Prompt
+		systemPrompt := f.buildL2SystemPrompt()
+		userPrompt := f.buildL2UserPrompt(batch)
+
+		// Call LLM
+		response, err := f.llmSvc.ChatComplete(ctx, systemPrompt, userPrompt)
+		if err != nil {
+			l2Err = fmt.Errorf("L2 LLM call failed: %w", err)
+		} else {
+			// Parse JSON response
+			jsonStr := extractJSON(response)
+			if err := json.Unmarshal([]byte(jsonStr), &l2Resp); err != nil {
+				l2Err = fmt.Errorf("parsing L2 LLM response: %w", err)
+			}
+		}
 	}
 
-	// Apply L2 results
+	// Apply L2 results (if available)
 	resultMap := make(map[int]L2Result)
 	for _, r := range l2Resp.Results {
 		resultMap[r.NewsIndex] = r
 	}
 
+	impactMappings := make([]ImpactMapping, len(batch))
+	for i, event := range batch {
+		impactMappings[i] = fallbackImpactMapping(event)
+	}
+	if f.config.EventImpactEnabled && f.eventImpactAgent != nil {
+		mappings, err := f.eventImpactAgent.AnalyzeBatch(ctx, batch, f.portfolio)
+		if err != nil {
+			log.Printf("[Funnel.L2] EventImpactAgent fallback used: %v", err)
+		}
+		for i := range batch {
+			if i < len(mappings) {
+				impactMappings[i] = normalizeImpactMapping(mappings[i], batch[i])
+			}
+		}
+	}
+
+	if l2Err != nil && !f.config.EventImpactEnabled {
+		return nil, l2Err
+	}
+
 	var passed []*NewsEvent
 	for i, event := range batch {
 		r, ok := resultMap[i]
-		if !ok {
-			continue
-		}
-
 		if event.FunnelResult == nil {
 			event.FunnelResult = &FunnelResult{}
 		}
+		if ok {
+			event.FunnelResult.L2Relevance = r.Relevance
+			event.FunnelResult.L2CausalSketch = r.CausalSketch
+			event.FunnelResult.L2Priority = r.Priority
+			event.FunnelResult.L2NeedsDeep = r.NeedsDeep
 
-		event.FunnelResult.L2Relevance = r.Relevance
-		event.FunnelResult.L2CausalSketch = r.CausalSketch
-		event.FunnelResult.L2Priority = r.Priority
-		event.FunnelResult.L2NeedsDeep = r.NeedsDeep
+			// Convert affected assets
+			event.FunnelResult.L2AffectedAssets = event.FunnelResult.L2AffectedAssets[:0]
+			for _, a := range r.AffectedAssets {
+				isHolding := f.isHolding(a.Asset)
+				event.FunnelResult.L2AffectedAssets = append(event.FunnelResult.L2AffectedAssets, AssetImpact{
+					AssetName: a.Asset,
+					AssetCode: a.Code,
+					Direction: a.Direction,
+					IsHolding: isHolding,
+				})
+			}
+		}
 
-		// Convert affected assets
-		for _, a := range r.AffectedAssets {
-			isHolding := f.isHolding(a.Asset)
-			event.FunnelResult.L2AffectedAssets = append(event.FunnelResult.L2AffectedAssets, AssetImpact{
-				AssetName: a.Asset,
-				AssetCode: a.Code,
-				Direction: a.Direction,
-				IsHolding: isHolding,
-			})
+		// New risk-input path: entity/impact/exposure/monitoring mapping.
+		if f.config.EventImpactEnabled {
+			mapping := impactMappings[i]
+			exposures := BuildExposureMapping(event, mapping, f.portfolio)
+			backfillLegacyFromRiskMapping(event, mapping, exposures)
 		}
 
 		// Determine if passes L2
-		if r.Relevance == RelevanceHigh || r.Relevance == RelevanceMedium {
+		if event.FunnelResult.L2Relevance == RelevanceHigh || event.FunnelResult.L2Relevance == RelevanceMedium {
 			event.FunnelResult.L2Pass = true
 			passed = append(passed, event)
 		}
+	}
+
+	if len(passed) == 0 && l2Err != nil {
+		// Keep batch for resilience when L2 fails.
+		return batch, nil
 	}
 
 	return passed, nil
@@ -689,6 +749,38 @@ func (f *Funnel) buildL2UserPrompt(batch []*NewsEvent) string {
 // ──────────────────────────────────────────────
 
 func (f *Funnel) layerThree(ctx context.Context, events []*NewsEvent) error {
+	// Causal verification first (degrade but do not block).
+	if f.config.CausalVerifierEnabled && f.causalVerifierAgent != nil {
+		candidates := make([]*NewsEvent, 0)
+		for _, event := range events {
+			if event.FunnelResult != nil && event.FunnelResult.L2Pass {
+				candidates = append(candidates, event)
+			}
+		}
+		sort.Slice(candidates, func(i, j int) bool {
+			return candidates[i].FunnelResult.L2Priority > candidates[j].FunnelResult.L2Priority
+		})
+		limit := f.config.VerifierMaxAnalyze
+		if limit <= 0 {
+			limit = f.config.L3MaxAnalyze
+		}
+		if len(candidates) > limit {
+			candidates = candidates[:limit]
+		}
+
+		if len(candidates) > 0 {
+			verifications, err := f.causalVerifierAgent.VerifyBatch(ctx, candidates, f.portfolio)
+			if err != nil {
+				log.Printf("[Funnel.L3] CausalVerifierAgent fallback used: %v", err)
+			}
+			for i, event := range candidates {
+				if i < len(verifications) {
+					applyVerificationPenalty(event, verifications[i])
+				}
+			}
+		}
+	}
+
 	if f.llmSvc == nil {
 		return nil
 	}
@@ -713,6 +805,10 @@ func (f *Funnel) layerThree(ctx context.Context, events []*NewsEvent) error {
 			continue
 		}
 		event.FunnelResult.L3Analysis = analysis
+		if len(event.FunnelResult.MonitoringSignalsV2) == 0 && len(analysis.MonitoringSignals) > 0 {
+			event.FunnelResult.MonitoringSignalsV2 = convertLegacyMonitoringSignals(event, analysis.MonitoringSignals)
+		}
+		backfillLegacyMonitoringSignals(event)
 	}
 
 	return nil

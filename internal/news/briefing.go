@@ -29,11 +29,11 @@ func (g *Generator) Generate(events []*NewsEvent, triggerType TriggerType, total
 		ID:                 briefID,
 		GeneratedAt:        time.Now(),
 		TriggerType:        triggerType,
-		Period:            g.getPeriodName(triggerType),
+		Period:             g.getPeriodName(triggerType),
 		TotalNewsProcessed: totalCollected,
-		L1Passed:          l1Passed,
-		L2Passed:          l2Passed,
-		L3Analyzed:        g.countL3Analyzed(events),
+		L1Passed:           l1Passed,
+		L2Passed:           l2Passed,
+		L3Analyzed:         g.countL3Analyzed(events),
 	}
 
 	// Module 1: Macro Overview
@@ -194,15 +194,77 @@ func (g *Generator) generatePortfolioImpact(events []*NewsEvent) []PortfolioImpa
 			continue
 		}
 
+		// Prefer exposure mapping from risk-input upgrade.
+		if len(e.FunnelResult.ExposureMapping) > 0 {
+			for _, exposure := range e.FunnelResult.ExposureMapping {
+				key := exposure.AssetCode
+				if key == "" {
+					key = exposure.AssetName
+				}
+				if key == "" {
+					continue
+				}
+
+				row, ok := impactMap[key]
+				if !ok {
+					action := "观察"
+					if exposure.Bucket == ExposureBucketHolding {
+						action = "持续观察"
+					} else if exposure.Bucket == ExposureBucketWatchlist {
+						action = "观察池跟踪"
+					}
+					row = &PortfolioImpactRow{
+						Asset:         exposure.AssetName,
+						Code:          exposure.AssetCode,
+						RelatedEvents: []string{},
+						NetDirection:  DirectionUncertain,
+						Confidence:    0.0,
+						Urgency:       "monitor",
+						Action:        action,
+						KeyCausal:     "",
+					}
+					impactMap[key] = row
+				}
+
+				row.RelatedEvents = append(row.RelatedEvents, e.Title)
+				if row.NetDirection == DirectionUncertain {
+					row.NetDirection = exposure.Direction
+				} else if row.NetDirection != exposure.Direction {
+					row.NetDirection = DirectionMixed
+				}
+				exposureConfidence := exposure.Confidence
+				if exposure.ExposureScore > exposureConfidence {
+					exposureConfidence = exposure.ExposureScore
+				}
+				if exposureConfidence > row.Confidence {
+					row.Confidence = exposureConfidence
+				}
+				if e.FunnelResult.L2Priority >= 4 {
+					row.Urgency = "immediate"
+					row.Action = "立即评估"
+				} else if e.FunnelResult.L2Priority >= 3 && row.Urgency != "immediate" {
+					row.Urgency = "today"
+					row.Action = "今日关注"
+				}
+				if row.KeyCausal == "" {
+					if exposure.Rationale != "" {
+						row.KeyCausal = exposure.Rationale
+					} else if e.FunnelResult.L2CausalSketch != "" {
+						row.KeyCausal = e.FunnelResult.L2CausalSketch
+					}
+				}
+			}
+			continue
+		}
+
+		// Backward-compatible fallback to legacy L2 affected assets.
 		for _, impact := range e.FunnelResult.L2AffectedAssets {
-			// Find or create impact row
-			var row *PortfolioImpactRow
-			if existing, ok := impactMap[impact.AssetCode]; ok {
-				row = existing
-			} else if existing, ok := impactMap[impact.AssetName]; ok {
-				row = existing
-			} else {
-				// Create new for non-holding assets
+			key := impact.AssetCode
+			if key == "" {
+				key = impact.AssetName
+			}
+			row, ok := impactMap[key]
+			if !ok {
 				row = &PortfolioImpactRow{
 					Asset:         impact.AssetName,
 					Code:          impact.AssetCode,
@@ -213,25 +275,18 @@ func (g *Generator) generatePortfolioImpact(events []*NewsEvent) []PortfolioImpa
 					Action:        "观察",
 					KeyCausal:     "",
 				}
-				impactMap[impact.AssetName] = row
+				impactMap[key] = row
 			}
 
-			// Add related event
 			row.RelatedEvents = append(row.RelatedEvents, e.Title)
-
-			// Update direction based on impact
 			if row.NetDirection == DirectionUncertain {
 				row.NetDirection = impact.Direction
 			} else if row.NetDirection != impact.Direction {
 				row.NetDirection = DirectionMixed
 			}
-
-			// Update confidence
 			if impact.Confidence > row.Confidence {
 				row.Confidence = impact.Confidence
 			}
-
-			// Update urgency based on priority
 			if e.FunnelResult.L2Priority >= 4 {
 				row.Urgency = "immediate"
 				row.Action = "立即评估"
@@ -239,8 +294,6 @@ func (g *Generator) generatePortfolioImpact(events []*NewsEvent) []PortfolioImpa
 				row.Urgency = "today"
 				row.Action = "今日关注"
 			}
-
-			// Add causal sketch
 			if e.FunnelResult.L2CausalSketch != "" && row.KeyCausal == "" {
 				row.KeyCausal = e.FunnelResult.L2CausalSketch
 			}
@@ -424,11 +477,27 @@ func (g *Generator) generateMonitoringItems(events []*NewsEvent) []MonitoringIte
 	var items []MonitoringItem
 
 	for _, e := range events {
-		if e.FunnelResult == nil || e.FunnelResult.L3Analysis == nil {
+		if e.FunnelResult == nil {
 			continue
 		}
 
-		// Add monitoring signals from L3 analysis
+		// Prefer structured monitoring signals.
+		if len(e.FunnelResult.MonitoringSignalsV2) > 0 {
+			for _, signal := range e.FunnelResult.MonitoringSignalsV2 {
+				items = append(items, MonitoringItem{
+					Signal:    signal.Signal,
+					Threshold: formatStructuredSignal(signal),
+					Assets:    signal.Assets,
+					Reason:    signal.Reason,
+				})
+			}
+			continue
+		}
+
+		// Backward-compatible fallback from L3 analysis.
+		if e.FunnelResult.L3Analysis == nil {
+			continue
+		}
 		for _, signal := range e.FunnelResult.L3Analysis.MonitoringSignals {
 			// Extract affected assets
 			var assets []string

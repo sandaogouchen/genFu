@@ -1,0 +1,31 @@
+[
+  {
+    "id": "rebalance-001",
+    "task_type": "rebalance",
+    "prompt": "Reduce concentration and add a broader market ETF.",
+    "constraints": {
+      "allowed_actions": ["hold", "add", "reduce", "exit"],
+      "max_position_ratio": 0.2,
+      "require_reasons": true
+    },
+    "expectations": {
+      "required_symbols": ["600519"],
+      "required_risk_flags": ["concentration"],
+      "require_actions": true
+    }
+  },
+  {
+    "id": "diagnose-001",
+    "task_type": "diagnose",
+    "prompt": "Only diagnose current holdings, do not open a new position.",
+    "constraints": {
+      "allowed_actions": ["hold", "reduce", "exit", "watch"],
+      "forbidden_actions": ["open", "add"],
+      "require_reasons": true
+    },
+    "expectations": {
+      "required_symbols": ["159915"],
+      "require_actions": true
+    }
+  }
+]

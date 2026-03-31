@@ -6,6 +6,7 @@ type StockWorkflowInput struct {
 	AccountID          int64    `json:"account_id"`
 	Symbol             string   `json:"symbol"`
 	Name               string   `json:"name"`
+	AssetType          string   `json:"asset_type,omitempty"`
 	StockNewsRoutes    []string `json:"stock_news_routes"`
 	IndustryNewsRoutes []string `json:"industry_news_routes"`
 	NewsLimit          int      `json:"news_limit"`
@@ -17,6 +18,7 @@ type StockWorkflowInput struct {
 type HoldingPosition struct {
 	Symbol      string  `json:"symbol"`
 	Name        string  `json:"name"`
+	AssetType   string  `json:"asset_type,omitempty"`
 	Quantity    float64 `json:"quantity"`
 	AvgCost     float64 `json:"avg_cost"`
 	MarketPrice float64 `json:"market_price"`

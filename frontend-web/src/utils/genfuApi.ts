@@ -36,11 +36,18 @@ export type AnalyzeResponse = {
 };
 
 export type DecisionRequest = {
+  account_id?: number;
   report_ids?: number[];
+  guide_selections?: GuideSelection[];
   meta?: Record<string, string>;
   session_id?: string;
   session_title?: string;
   prompt?: string;
+};
+
+export type GuideSelection = {
+  symbol: string;
+  guide_id: number;
 };
 
 export type DecisionItem = {
@@ -65,6 +72,48 @@ export type DecisionOutput = {
 
 export type TradeSignal = DecisionItem & { decision_id?: string };
 
+export type RiskBudget = {
+  max_single_order_ratio?: number;
+  max_symbol_exposure_ratio?: number;
+  max_daily_trade_ratio?: number;
+  min_confidence?: number;
+};
+
+export type PlannedOrder = {
+  order_id?: string;
+  account_id?: number;
+  symbol?: string;
+  name?: string;
+  asset_type?: string;
+  action?: string;
+  quantity?: number;
+  price?: number;
+  notional?: number;
+  confidence?: number;
+  decision_id?: string;
+  planning_reason?: string;
+};
+
+export type GuardedOrder = PlannedOrder & {
+  guard_status?: string;
+  guard_reason?: string;
+  execution_status?: string;
+  execution_error?: string;
+  trade_id?: number;
+};
+
+export type ReviewAttribution = {
+  order_id?: string;
+  title?: string;
+  detail?: string;
+};
+
+export type PostTradeReview = {
+  summary?: string;
+  attributions?: ReviewAttribution[];
+  learning_points?: string[];
+};
+
 export type ExecutionResult = {
   signal?: TradeSignal;
   trade?: {
@@ -86,6 +135,12 @@ export type DecisionResponse = {
   signals?: TradeSignal[];
   executions?: ExecutionResult[];
   tool_results?: ToolResult[];
+  run_id?: string;
+  risk_budget?: RiskBudget;
+  planned_orders?: PlannedOrder[];
+  guarded_orders?: GuardedOrder[];
+  review?: PostTradeReview;
+  warnings?: string[];
 };
 
 export type StockWorkflowInput = {
@@ -103,6 +158,7 @@ export type StockWorkflowInput = {
 export type HoldingPosition = {
   symbol?: string;
   name?: string;
+  asset_type?: string;
   quantity?: number;
   avg_cost?: number;
   market_price?: number;
@@ -125,7 +181,16 @@ export type MarketMove = {
   error?: string;
 };
 
+export type WorkflowNewsItem = {
+  title?: string;
+  link?: string;
+  guid?: string;
+  published_at?: string;
+  description?: string;
+};
+
 export type NewsSummaryOutput = {
+  items?: WorkflowNewsItem[];
   summary?: string;
   sentiment?: string;
 };
@@ -170,6 +235,12 @@ export type GenerateEvent = {
   message?: ChatMessage;
   tool_call?: unknown;
   tool_result?: ToolResult;
+  intent?: {
+    intent: string;
+    workflow: string;
+    confidence: number;
+    fallback?: boolean;
+  };
   done?: boolean;
 };
 
@@ -249,6 +320,11 @@ export type Timeframe = "immediate" | "short" | "medium" | "long";
 export type Direction = "bullish" | "bearish" | "mixed" | "uncertain";
 export type Relevance = "high" | "medium" | "low" | "none";
 export type TriggerType = "pre_market" | "intraday" | "breaking" | "manual";
+export type ImpactLevel = "weak" | "moderate" | "strong";
+export type VerificationVerdict = "passed" | "weak" | "invalid";
+export type ExposureBucket = "holding" | "watchlist";
+export type ExposureRelation = "direct" | "product" | "competitor" | "supply" | "theme" | "macro" | "unknown";
+export type SignalOperator = "gt" | "gte" | "lt" | "lte" | "eq";
 
 export type EntityLabel = {
   name: string;
@@ -319,6 +395,52 @@ export type CausalAnalysis = {
   }[];
 };
 
+export type ImpactItem = {
+  entity_name: string;
+  entity_code?: string;
+  direction: Direction;
+  impact_score: number;
+  impact_level: ImpactLevel;
+  confidence: number;
+  rationale?: string;
+};
+
+export type StructuredMonitoringSignal = {
+  signal: string;
+  metric?: string;
+  operator?: SignalOperator;
+  threshold?: string;
+  window?: string;
+  assets?: string[];
+  reason?: string;
+};
+
+export type ImpactMapping = {
+  event_summary: string;
+  items?: ImpactItem[];
+  monitoring_signals?: StructuredMonitoringSignal[];
+};
+
+export type PortfolioExposure = {
+  asset_name: string;
+  asset_code?: string;
+  bucket: ExposureBucket;
+  relation: ExposureRelation;
+  direction: Direction;
+  impact_score: number;
+  exposure_score: number;
+  position_weight?: number;
+  confidence: number;
+  rationale?: string;
+};
+
+export type CausalVerification = {
+  verdict: VerificationVerdict;
+  score: number;
+  reason?: string;
+  uncertains?: string[];
+};
+
 export type FunnelResult = {
   l1_score: number;
   l1_matched_anchors?: AnchorMatch[];
@@ -330,6 +452,11 @@ export type FunnelResult = {
   l2_needs_deep: boolean;
   l2_pass: boolean;
   l3_analysis?: CausalAnalysis;
+  event_entities?: EntityLabel[];
+  impact_mapping?: ImpactMapping;
+  exposure_mapping?: PortfolioExposure[];
+  causal_verification?: CausalVerification;
+  monitoring_signals_v2?: StructuredMonitoringSignal[];
 };
 
 export type NewsEvent = {
@@ -545,6 +672,29 @@ export type StockPick = {
   allocation: Allocation;
 };
 
+export type OperationGuideCondition = {
+  type?: string;
+  description?: string;
+  value?: string;
+};
+
+export type OperationGuide = {
+  id: number;
+  symbol: string;
+  pick_id?: string;
+  buy_conditions?: OperationGuideCondition[];
+  sell_conditions?: OperationGuideCondition[];
+  stop_loss?: string;
+  take_profit?: string;
+  risk_monitors?: string[];
+  trade_guide_text?: string;
+  trade_guide_json?: string;
+  trade_guide_version?: string;
+  valid_until?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
 export type IndexQuote = {
   code: string;
   name: string;
@@ -603,15 +753,69 @@ export type ConversationRunsResponse = {
   limit: number;
 };
 
+export type ConversationSessionRetryOptions = {
+  retries?: number;
+  initialDelayMs?: number;
+  maxDelayMs?: number;
+  backoffFactor?: number;
+  signal?: AbortSignal;
+};
+
+function isAbortError(err: unknown): boolean {
+  return (
+    (err instanceof DOMException && err.name === "AbortError") ||
+    (err instanceof Error && err.name === "AbortError")
+  );
+}
+
+async function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (delayMs <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export async function pickStocks(request: StockPickRequest): Promise<StockPickResponse> {
   return postJson<StockPickResponse>("/api/stockpicker", request);
+}
+
+export async function listOperationGuides(symbol: string): Promise<OperationGuide[]> {
+  const params = new URLSearchParams({ symbol });
+  return getJson<OperationGuide[]>(`/api/operation-guides?${params.toString()}`);
 }
 
 export async function createConversationSession(payload: {
   scene: ConversationScene;
   title?: string;
-}): Promise<ConversationSession> {
-  return postJson<ConversationSession>("/api/conversations/sessions", payload);
+}, options?: ConversationSessionRetryOptions): Promise<ConversationSession> {
+  const retries = Math.max(0, Math.floor(options?.retries ?? 2));
+  const initialDelayMs = Math.max(0, options?.initialDelayMs ?? 400);
+  const maxDelayMs = Math.max(initialDelayMs, options?.maxDelayMs ?? 2600);
+  const backoffFactor = Math.max(1, options?.backoffFactor ?? 2);
+  let delayMs = initialDelayMs;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await postJson<ConversationSession>("/api/conversations/sessions", payload, { signal: options?.signal });
+    } catch (err) {
+      if (isAbortError(err) || attempt >= retries) {
+        throw err;
+      }
+      await waitForRetry(delayMs, options?.signal);
+      delayMs = Math.min(maxDelayMs, Math.max(delayMs + 1, Math.round(delayMs * backoffFactor)));
+    }
+  }
+
+  throw new Error("create_session_retry_exhausted");
 }
 
 export async function listConversationSessions(

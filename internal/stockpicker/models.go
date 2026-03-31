@@ -5,9 +5,10 @@ import "time"
 // StockPickRequest 选股请求
 type StockPickRequest struct {
 	AccountID    int64     `json:"account_id"`
-	TopN         int       `json:"top_n"`     // 返回股票数量，默认5
-	DateFrom     time.Time `json:"date_from"` // 数据起始日期
-	DateTo       time.Time `json:"date_to"`   // 数据结束日期
+	TopN         int       `json:"top_n"`                  // 返回股票数量，默认5
+	DateFrom     time.Time `json:"date_from"`              // 数据起始日期
+	DateTo       time.Time `json:"date_to"`                // 数据结束日期
+	RiskProfile  string    `json:"risk_profile,omitempty"` // conservative/balanced/aggressive
 	SessionID    string    `json:"session_id,omitempty"`
 	SessionTitle string    `json:"session_title,omitempty"`
 	Prompt       string    `json:"prompt,omitempty"`
@@ -15,13 +16,16 @@ type StockPickRequest struct {
 
 // StockPickResponse 选股响应
 type StockPickResponse struct {
-	PickID        string           `json:"pick_id"`
-	GeneratedAt   time.Time        `json:"generated_at"`
-	Stocks        []StockPick      `json:"stocks"`
-	MarketData    MarketData       `json:"market_data"`
-	NewsSummary   string           `json:"news_summary"`
-	Warnings      []string         `json:"warnings,omitempty"`
-	ScreeningInfo *ScreeningResult `json:"screening_info,omitempty"` // 筛选信息
+	PickID           string           `json:"pick_id"`
+	GeneratedAt      time.Time        `json:"generated_at"`
+	Stocks           []StockPick      `json:"stocks"`
+	MarketData       MarketData       `json:"market_data"`
+	NewsSummary      string           `json:"news_summary"`
+	MarketRegime     string           `json:"market_regime,omitempty"`
+	RegimeConfidence float64          `json:"regime_confidence,omitempty"`
+	RegimeReasoning  string           `json:"regime_reasoning,omitempty"`
+	Warnings         []string         `json:"warnings,omitempty"`
+	ScreeningInfo    *ScreeningResult `json:"screening_info,omitempty"` // 筛选信息
 }
 
 // StockPick 单只选股结果
@@ -35,8 +39,12 @@ type StockPick struct {
 	TechnicalReasons  TechnicalReason    `json:"technical_reasons"`
 	FinancialAnalysis *FinancialAnalysis `json:"financial_analysis,omitempty"`
 	OperationGuide    *OperationGuide    `json:"operation_guide,omitempty"`
+	FitScore          float64            `json:"fit_score,omitempty"`
+	RiskBudgetWeight  float64            `json:"risk_budget_weight,omitempty"`
+	FitReasons        []string           `json:"fit_reasons,omitempty"`
 	TradeGuideText    string             `json:"trade_guide_text"`
 	TradeGuideJSON    string             `json:"trade_guide_json"`
+	TradeGuideJSONV2  string             `json:"trade_guide_json_v2,omitempty"`
 	TradeGuideVersion string             `json:"trade_guide_version"`
 	RiskLevel         string             `json:"risk_level"` // low/medium/high
 	Allocation        Allocation         `json:"allocation"`
@@ -129,19 +137,61 @@ type AgentOutput struct {
 	RiskNotes  string      `json:"risk_notes"`
 }
 
+// RegimeOutput 市场状态识别输出
+type RegimeOutput struct {
+	MarketRegime     string   `json:"market_regime"`
+	RegimeConfidence float64  `json:"regime_confidence"`
+	RegimeReasoning  string   `json:"regime_reasoning"`
+	RegimeSignals    []string `json:"regime_signals,omitempty"`
+}
+
+// PortfolioFitOutput 组合匹配输出
+type PortfolioFitOutput struct {
+	Summary string               `json:"summary"`
+	Stocks  []PortfolioFitRecord `json:"stocks"`
+}
+
+// PortfolioFitRecord 单标的组合匹配信息
+type PortfolioFitRecord struct {
+	Symbol           string   `json:"symbol"`
+	FitScore         float64  `json:"fit_score"`
+	RiskBudgetWeight float64  `json:"risk_budget_weight"`
+	FitReasons       []string `json:"fit_reasons"`
+	HardReject       bool     `json:"hard_reject,omitempty"`
+	RejectReason     string   `json:"reject_reason,omitempty"`
+}
+
+// TradeGuideCompilerOutput 交易指南编译输出
+type TradeGuideCompilerOutput struct {
+	Stocks []TradeGuideCompilerRecord `json:"stocks"`
+}
+
+// TradeGuideCompilerRecord 单标的编译结果
+type TradeGuideCompilerRecord struct {
+	Symbol            string `json:"symbol"`
+	TradeGuideText    string `json:"trade_guide_text"`
+	TradeGuideJSONV2  string `json:"trade_guide_json_v2"`
+	TradeGuideJSON    string `json:"trade_guide_json"`
+	TradeGuideVersion string `json:"trade_guide_version"`
+}
+
 // OperationGuide 操作指南
 type OperationGuide struct {
-	ID             int64       `json:"id,omitempty"`
-	Symbol         string      `json:"symbol"`
-	PickID         string      `json:"pick_id,omitempty"`
-	BuyConditions  []Condition `json:"buy_conditions"`
-	SellConditions []Condition `json:"sell_conditions"`
-	StopLoss       string      `json:"stop_loss"`
-	TakeProfit     string      `json:"take_profit"`
-	RiskMonitors   []string    `json:"risk_monitors"`
-	ValidUntil     *time.Time  `json:"valid_until,omitempty"`
-	CreatedAt      time.Time   `json:"created_at,omitempty"`
-	UpdatedAt      time.Time   `json:"updated_at,omitempty"`
+	ID                int64       `json:"id,omitempty"`
+	Symbol            string      `json:"symbol"`
+	PickID            string      `json:"pick_id,omitempty"`
+	BuyConditions     []Condition `json:"buy_conditions"`
+	SellConditions    []Condition `json:"sell_conditions"`
+	StopLoss          string      `json:"stop_loss"`
+	TakeProfit        string      `json:"take_profit"`
+	RiskMonitors      []string    `json:"risk_monitors"`
+	TradeGuideText    string      `json:"trade_guide_text,omitempty"`
+	TradeGuideJSON    string      `json:"trade_guide_json,omitempty"`
+	TradeGuideJSONV2  string      `json:"trade_guide_json_v2,omitempty"`
+	TradeGuideVersion string      `json:"trade_guide_version,omitempty"`
+	ValidUntil        *time.Time  `json:"valid_until,omitempty"`
+	CreatedAt         time.Time   `json:"created_at,omitempty"`
+	UpdatedAt         time.Time   `json:"updated_at,omitempty"`
 }
 
 // Condition 操作条件

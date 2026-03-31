@@ -25,6 +25,31 @@ type stubPortfolioPriceResolver struct {
 	fund  map[string]testQuoteResult
 }
 
+type stubInstrumentSearchProvider struct {
+	searchResults []SearchItem
+	searchErr     error
+	stockResult   *SearchItem
+	stockErr      error
+}
+
+func (s stubInstrumentSearchProvider) SearchInstruments(_ context.Context, _ string, _ int) ([]SearchItem, error) {
+	if s.searchErr != nil {
+		return nil, s.searchErr
+	}
+	return append([]SearchItem(nil), s.searchResults...), nil
+}
+
+func (s stubInstrumentSearchProvider) SearchStockByCode(_ context.Context, _ string) (*SearchItem, error) {
+	if s.stockErr != nil {
+		return nil, s.stockErr
+	}
+	if s.stockResult == nil {
+		return nil, nil
+	}
+	item := *s.stockResult
+	return &item, nil
+}
+
 type stubMarketDataExecutor struct {
 	mu      sync.Mutex
 	calls   []string
@@ -568,4 +593,101 @@ func TestInvestmentToolAddPositionByQuantityNormalizeIdentity(t *testing.T) {
 	assertAlmostEqual(t, snapshot.Positions[0].Cost, 1000)
 	assertAlmostEqual(t, snapshot.Positions[0].MarketValue, 1020)
 	assertAlmostEqual(t, snapshot.Positions[0].PnL, 20)
+}
+
+func TestInvestmentToolSearchInstrumentsIncludesStockAndFund(t *testing.T) {
+	ctx, _, svc, _ := setupInvestmentToolTest(t)
+	tool := NewInvestmentToolWithResolver(
+		svc,
+		stubInstrumentSearchProvider{
+			searchResults: []SearchItem{
+				{Code: "007345", Name: "富国科技创新灵活配置混合", Type: "fund", Price: 1.234},
+			},
+			stockResult: &SearchItem{
+				Code:  "600519",
+				Name:  "贵州茅台",
+				Type:  "stock",
+				Price: 1888.8,
+			},
+		},
+		NewMarketDataTool(svc),
+		stubPortfolioPriceResolver{},
+	)
+
+	result, err := tool.Execute(ctx, map[string]interface{}{
+		"action": "search_instruments",
+		"query":  "600519",
+		"limit":  10,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	records, ok := result.Output.([]map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected output type: %T", result.Output)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records, got=%d", len(records))
+	}
+
+	first := records[0]
+	if first["symbol"] != "600519" {
+		t.Fatalf("unexpected stock symbol: %+v", first["symbol"])
+	}
+	if first["asset_type"] != "stock" {
+		t.Fatalf("expected stock asset_type, got=%v", first["asset_type"])
+	}
+	if first["type"] != "stock" {
+		t.Fatalf("expected stock type, got=%v", first["type"])
+	}
+	if first["name"] != "贵州茅台" {
+		t.Fatalf("unexpected stock name: %v", first["name"])
+	}
+
+	second := records[1]
+	if second["asset_type"] != "fund" {
+		t.Fatalf("expected fund asset_type, got=%v", second["asset_type"])
+	}
+	if second["type"] != "fund" {
+		t.Fatalf("expected fund type, got=%v", second["type"])
+	}
+}
+
+func TestInvestmentToolSearchInstrumentsStockFallbackByCode(t *testing.T) {
+	ctx, _, svc, _ := setupInvestmentToolTest(t)
+	tool := NewInvestmentToolWithResolver(
+		svc,
+		stubInstrumentSearchProvider{
+			searchResults: nil,
+			stockErr:      errors.New("quote_timeout"),
+		},
+		NewMarketDataTool(svc),
+		stubPortfolioPriceResolver{},
+	)
+
+	result, err := tool.Execute(ctx, map[string]interface{}{
+		"action": "search_instruments",
+		"query":  "600519",
+		"limit":  10,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	records, ok := result.Output.([]map[string]interface{})
+	if !ok {
+		t.Fatalf("unexpected output type: %T", result.Output)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 fallback stock record, got=%d", len(records))
+	}
+	if records[0]["symbol"] != "600519" {
+		t.Fatalf("unexpected fallback symbol: %v", records[0]["symbol"])
+	}
+	if records[0]["asset_type"] != "stock" {
+		t.Fatalf("unexpected fallback asset_type: %v", records[0]["asset_type"])
+	}
+	if records[0]["type"] != "stock" {
+		t.Fatalf("unexpected fallback type: %v", records[0]["type"])
+	}
 }

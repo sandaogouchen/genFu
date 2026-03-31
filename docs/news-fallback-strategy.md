@@ -6,6 +6,15 @@
 
 ## 降级行为
 
+### 0. 风控输入升级（新增）
+
+当前系统在原有 L2/L3 之上新增了两条可配置能力：
+
+- `EventImpactAgent`：事件 -> 实体 -> 方向/强度 -> 组合暴露映射 -> 结构化监控信号
+- `CausalVerifierAgent`：因果链置信度校验，执行“降权不拦截”策略
+
+两项能力均可通过 `news.pipeline` 配置开关动态启停，不影响历史 `funnel_result.l2_* / l3_analysis` 字段兼容性。
+
 ### 1. 新闻采集器 (Collector)
 
 **正常模式：**
@@ -111,6 +120,13 @@ news:
 
 news:
   pipeline_enabled: true  # 仍然可以启用
+  pipeline:
+    event_impact_enabled: true
+    causal_verifier_enabled: true
+    event_impact_batch_size: 10
+    verifier_max_analyze: 5
+    verifier_weak_threshold: 0.6
+    verifier_invalid_threshold: 0.4
 ```
 
 ## 启动日志
@@ -180,3 +196,5 @@ Embedding服务已启用: provider=openai model=text-embedding-3-small
 3. **成本控制**：Embedding API调用会产生费用，建议根据新闻量评估成本
 
 4. **切换模式**：可以随时添加或移除Embedding配置，重启服务即可切换模式
+
+5. **风险输入回退**：若新链路引入噪音，可将 `event_impact_enabled` 或 `causal_verifier_enabled` 设为 `false`，立即回退到旧 L2/L3 行为

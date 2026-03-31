@@ -18,6 +18,7 @@ type AppConfig struct {
 	EastMoney EastMoneyConfig `yaml:"eastmoney"`
 	RSSHub    RSSHubConfig    `yaml:"rsshub"`
 	News      NewsConfig      `yaml:"news"`
+	Decision  DecisionConfig  `yaml:"decision"`
 	NextOpen  NextOpenConfig  `yaml:"next_open"`
 	Access    AccessConfig    `yaml:"access"`
 }
@@ -77,12 +78,25 @@ type NewsConfig struct {
 	Pipeline        PipelineConfig `yaml:"pipeline"`
 }
 
+type DecisionConfig struct {
+	MaxSingleOrderRatio    float64 `yaml:"max_single_order_ratio"`
+	MaxSymbolExposureRatio float64 `yaml:"max_symbol_exposure_ratio"`
+	MaxDailyTradeRatio     float64 `yaml:"max_daily_trade_ratio"`
+	MinConfidence          float64 `yaml:"min_confidence"`
+}
+
 type PipelineConfig struct {
-	PreMarketTime    string `yaml:"pre_market_time"`
-	IntradayInterval string `yaml:"intraday_interval"`
-	TradingStart     string `yaml:"trading_start"`
-	TradingEnd       string `yaml:"trading_end"`
-	LookbackDuration string `yaml:"lookback_duration"`
+	PreMarketTime            string  `yaml:"pre_market_time"`
+	IntradayInterval         string  `yaml:"intraday_interval"`
+	TradingStart             string  `yaml:"trading_start"`
+	TradingEnd               string  `yaml:"trading_end"`
+	LookbackDuration         string  `yaml:"lookback_duration"`
+	EventImpactEnabled       *bool   `yaml:"event_impact_enabled"`
+	CausalVerifierEnabled    *bool   `yaml:"causal_verifier_enabled"`
+	EventImpactBatchSize     int     `yaml:"event_impact_batch_size"`
+	VerifierMaxAnalyze       int     `yaml:"verifier_max_analyze"`
+	VerifierWeakThreshold    float64 `yaml:"verifier_weak_threshold"`
+	VerifierInvalidThreshold float64 `yaml:"verifier_invalid_threshold"`
 }
 
 type NextOpenConfig struct {
@@ -107,6 +121,7 @@ type NormalizedConfig struct {
 	EastMoney NormalizedEastMoneyConfig
 	RSSHub    NormalizedRSSHubConfig
 	News      NormalizedNewsConfig
+	Decision  NormalizedDecisionConfig
 	NextOpen  NormalizedNextOpenConfig
 	Access    NormalizedAccessConfig
 }
@@ -162,12 +177,25 @@ type NormalizedNewsConfig struct {
 	Pipeline        NormalizedPipelineConfig
 }
 
+type NormalizedDecisionConfig struct {
+	MaxSingleOrderRatio    float64
+	MaxSymbolExposureRatio float64
+	MaxDailyTradeRatio     float64
+	MinConfidence          float64
+}
+
 type NormalizedPipelineConfig struct {
-	PreMarketTime    string
-	IntradayInterval time.Duration
-	TradingStart     string
-	TradingEnd       string
-	LookbackDuration time.Duration
+	PreMarketTime            string
+	IntradayInterval         time.Duration
+	TradingStart             string
+	TradingEnd               string
+	LookbackDuration         time.Duration
+	EventImpactEnabled       bool
+	CausalVerifierEnabled    bool
+	EventImpactBatchSize     int
+	VerifierMaxAnalyze       int
+	VerifierWeakThreshold    float64
+	VerifierInvalidThreshold float64
 }
 
 type NormalizedAccessConfig struct {
@@ -230,12 +258,24 @@ func normalize(cfg AppConfig) (NormalizedConfig, error) {
 			Keywords:        cfg.News.Keywords,
 			PipelineEnabled: cfg.News.PipelineEnabled,
 			Pipeline: NormalizedPipelineConfig{
-				PreMarketTime:    cfg.News.Pipeline.PreMarketTime,
-				IntradayInterval: 30 * time.Minute,
-				TradingStart:     cfg.News.Pipeline.TradingStart,
-				TradingEnd:       cfg.News.Pipeline.TradingEnd,
-				LookbackDuration: 24 * time.Hour,
+				PreMarketTime:            cfg.News.Pipeline.PreMarketTime,
+				IntradayInterval:         30 * time.Minute,
+				TradingStart:             cfg.News.Pipeline.TradingStart,
+				TradingEnd:               cfg.News.Pipeline.TradingEnd,
+				LookbackDuration:         24 * time.Hour,
+				EventImpactEnabled:       true,
+				CausalVerifierEnabled:    true,
+				EventImpactBatchSize:     cfg.News.Pipeline.EventImpactBatchSize,
+				VerifierMaxAnalyze:       cfg.News.Pipeline.VerifierMaxAnalyze,
+				VerifierWeakThreshold:    cfg.News.Pipeline.VerifierWeakThreshold,
+				VerifierInvalidThreshold: cfg.News.Pipeline.VerifierInvalidThreshold,
 			},
+		},
+		Decision: NormalizedDecisionConfig{
+			MaxSingleOrderRatio:    cfg.Decision.MaxSingleOrderRatio,
+			MaxSymbolExposureRatio: cfg.Decision.MaxSymbolExposureRatio,
+			MaxDailyTradeRatio:     cfg.Decision.MaxDailyTradeRatio,
+			MinConfidence:          cfg.Decision.MinConfidence,
 		},
 		NextOpen: NormalizedNextOpenConfig{
 			Enabled:   cfg.NextOpen.Enabled,
@@ -395,6 +435,18 @@ func normalize(cfg AppConfig) (NormalizedConfig, error) {
 	if result.News.AccountID == 0 {
 		result.News.AccountID = 1
 	}
+	if result.Decision.MaxSingleOrderRatio <= 0 || result.Decision.MaxSingleOrderRatio > 1 {
+		result.Decision.MaxSingleOrderRatio = 0.20
+	}
+	if result.Decision.MaxSymbolExposureRatio <= 0 || result.Decision.MaxSymbolExposureRatio > 1 {
+		result.Decision.MaxSymbolExposureRatio = 0.30
+	}
+	if result.Decision.MaxDailyTradeRatio <= 0 || result.Decision.MaxDailyTradeRatio > 1 {
+		result.Decision.MaxDailyTradeRatio = 0.40
+	}
+	if result.Decision.MinConfidence <= 0 || result.Decision.MinConfidence > 1 {
+		result.Decision.MinConfidence = 0.55
+	}
 
 	// Pipeline defaults
 	if result.News.Pipeline.PreMarketTime == "" {
@@ -419,6 +471,24 @@ func normalize(cfg AppConfig) (NormalizedConfig, error) {
 			return NormalizedConfig{}, errors.New("invalid_lookback_duration")
 		}
 		result.News.Pipeline.LookbackDuration = parsedLookback
+	}
+	if cfg.News.Pipeline.EventImpactEnabled != nil {
+		result.News.Pipeline.EventImpactEnabled = *cfg.News.Pipeline.EventImpactEnabled
+	}
+	if cfg.News.Pipeline.CausalVerifierEnabled != nil {
+		result.News.Pipeline.CausalVerifierEnabled = *cfg.News.Pipeline.CausalVerifierEnabled
+	}
+	if result.News.Pipeline.EventImpactBatchSize <= 0 {
+		result.News.Pipeline.EventImpactBatchSize = 10
+	}
+	if result.News.Pipeline.VerifierMaxAnalyze <= 0 {
+		result.News.Pipeline.VerifierMaxAnalyze = 5
+	}
+	if result.News.Pipeline.VerifierWeakThreshold <= 0 || result.News.Pipeline.VerifierWeakThreshold >= 1 {
+		result.News.Pipeline.VerifierWeakThreshold = 0.6
+	}
+	if result.News.Pipeline.VerifierInvalidThreshold <= 0 || result.News.Pipeline.VerifierInvalidThreshold >= result.News.Pipeline.VerifierWeakThreshold {
+		result.News.Pipeline.VerifierInvalidThreshold = 0.4
 	}
 
 	if result.NextOpen.Hour == 0 && result.NextOpen.Minute == 0 {

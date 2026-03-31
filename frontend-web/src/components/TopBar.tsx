@@ -1,6 +1,7 @@
 import { Link, useLocation } from "react-router-dom";
 import { ExternalLink, Moon, PanelLeft, Sun } from "lucide-react";
 
+import { useTheme } from "@/hooks/useTheme";
 import { cn } from "@/lib/utils";
 
 const TITLES: Record<string, string> = {
@@ -16,25 +17,14 @@ const TITLES: Record<string, string> = {
   "/stockpicker": "智能选股",
 };
 
-function toggleTheme() {
-  const html = document.documentElement;
-  const newIsDark = !html.classList.contains("dark");
+type TopBarProps = {
+  onToggleSidebar?: () => void;
+  onOpenMobileNav?: () => void;
+};
 
-  if (newIsDark) {
-    html.classList.add("dark");
-    localStorage.setItem("genfu.ui.theme", "dark");
-  } else {
-    html.classList.remove("dark");
-    localStorage.setItem("genfu.ui.theme", "light");
-  }
-}
-
-function isDark() {
-  return document.documentElement.classList.contains("dark");
-}
-
-export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => void }) {
+export default function TopBar({ onToggleSidebar, onOpenMobileNav }: TopBarProps) {
   const { pathname } = useLocation();
+  const { isDark, toggleTheme } = useTheme();
   const title = TITLES[pathname] ?? "GenFu";
 
   return (
@@ -43,7 +33,15 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
         <div className="flex min-w-0 items-center gap-3">
           <button
             type="button"
-            className="inline-flex h-9 w-9 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-muted hover:text-foreground md:hidden"
+            aria-label="open-mobile-nav"
+            onClick={() => onOpenMobileNav?.()}
+          >
+            <PanelLeft className="h-5 w-5" />
+          </button>
+          <button
+            type="button"
+            className="hidden h-9 w-9 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-muted hover:text-foreground md:inline-flex"
             aria-label="toggle-sidebar"
             onClick={() => onToggleSidebar?.()}
           >
@@ -58,9 +56,9 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
             type="button"
             onClick={toggleTheme}
             className="inline-flex h-9 w-9 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            aria-label={isDark() ? "Switch to light mode" : "Switch to dark mode"}
+            aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
           >
-            {isDark() ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+            {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
           </button>
           <Link
             to="/docs"
