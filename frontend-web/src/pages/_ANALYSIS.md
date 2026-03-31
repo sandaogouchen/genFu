@@ -1,0 +1,18 @@
+# frontend-web/src/pages/
+
+> **分析时间**: 2026-03-31T20:00:00+08:00
+> **源分支**: `main` | **分析提交**: `04bd5e16fa7d`
+> **直接源文件数**: 10
+> **直接子目录**: 无
+
+## 目录职责概述
+
+页面组件。包含 Home、Chat、Analyze、StockPicker、Decision、Investment、Market、News、Docs、Workflow 等页面。
+
+## 文件分析
+
+（前端组件文件的详细分析从略，核心业务逻辑在后端。）
+
+## 对外暴露接口
+
+作为 React 组件/模块被上层页面或组件导入使用。
