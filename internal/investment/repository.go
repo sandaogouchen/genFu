@@ -696,3 +696,36 @@ func (r *Repository) GetInstrumentBySymbol(ctx context.Context, symbol string) (
 	}
 	return i, nil
 }
+
+// ListValuations returns historical valuations for a given account,
+// ordered by valuation_at ascending, limited to the last `days` days.
+func (r *Repository) ListValuations(ctx context.Context, accountID int64, days int) ([]Valuation, error) {
+	if days <= 0 {
+		days = 30
+	}
+	cutoff := time.Now().AddDate(0, 0, -days)
+	rows, err := r.db.QueryContext(ctx, `
+		select id, account_id, total_value, total_cost, total_pnl, valuation_at
+		from valuations
+		where account_id = ? and valuation_at >= ?
+		order by valuation_at asc
+	`, accountID, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var valuations []Valuation
+	for rows.Next() {
+		var v Valuation
+		var valuationRaw sql.NullString
+		if err := rows.Scan(&v.ID, &v.AccountID, &v.TotalValue, &v.TotalCost, &v.TotalPnL, &valuationRaw); err != nil {
+			return nil, err
+		}
+		if parsed, ok := db.ParseTime(valuationRaw); ok {
+			v.ValuationAt = parsed
+		}
+		valuations = append(valuations, v)
+	}
+	return valuations, rows.Err()
+}
