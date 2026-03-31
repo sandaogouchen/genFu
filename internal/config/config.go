@@ -16,6 +16,7 @@ type AppConfig struct {
 	LLM       LLMConfig       `yaml:"llm"`
 	Embedding EmbeddingConfig `yaml:"embedding"`
 	EastMoney EastMoneyConfig `yaml:"eastmoney"`
+	Tushare   TushareConfig   `yaml:"tushare"`
 	RSSHub    RSSHubConfig    `yaml:"rsshub"`
 	News      NewsConfig      `yaml:"news"`
 	Decision  DecisionConfig  `yaml:"decision"`
@@ -60,6 +61,14 @@ type EastMoneyConfig struct {
 	MinInterval string `yaml:"min_interval"`
 	Referer     string `yaml:"referer"`
 	UserAgent   string `yaml:"user_agent"`
+}
+
+type TushareConfig struct {
+	Token      string `yaml:"token"`
+	BaseURL    string `yaml:"base_url"`
+	Timeout    string `yaml:"timeout"`
+	MaxRetries int    `yaml:"max_retries"`
+	RateLimit  int    `yaml:"rate_limit"`
 }
 
 type RSSHubConfig struct {
@@ -119,11 +128,18 @@ type NormalizedConfig struct {
 	LLM       NormalizedLLMConfig
 	Embedding NormalizedEmbeddingConfig
 	EastMoney NormalizedEastMoneyConfig
-	RSSHub    NormalizedRSSHubConfig
-	News      NormalizedNewsConfig
-	Decision  NormalizedDecisionConfig
-	NextOpen  NormalizedNextOpenConfig
-	Access    NormalizedAccessConfig
+	Tushare   struct {
+		Token      string
+		BaseURL    string
+		Timeout    time.Duration
+		MaxRetries int
+		RateLimit  int
+	}
+	RSSHub   NormalizedRSSHubConfig
+	News     NormalizedNewsConfig
+	Decision NormalizedDecisionConfig
+	NextOpen NormalizedNextOpenConfig
+	Access   NormalizedAccessConfig
 }
 
 type NormalizedPGConfig struct {
@@ -402,6 +418,34 @@ func normalize(cfg AppConfig) (NormalizedConfig, error) {
 		result.EastMoney.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 	}
 
+	// Tushare
+	result.Tushare.Token = cfg.Tushare.Token
+	result.Tushare.BaseURL = cfg.Tushare.BaseURL
+	if result.Tushare.BaseURL == "" {
+		result.Tushare.BaseURL = "http://api.tushare.pro"
+	}
+	if cfg.Tushare.Timeout != "" {
+		if d, err := time.ParseDuration(cfg.Tushare.Timeout); err == nil {
+			result.Tushare.Timeout = d
+		}
+	}
+	if result.Tushare.Timeout == 0 {
+		result.Tushare.Timeout = 15 * time.Second
+	}
+	result.Tushare.MaxRetries = cfg.Tushare.MaxRetries
+	if result.Tushare.MaxRetries <= 0 {
+		result.Tushare.MaxRetries = 3
+	}
+	result.Tushare.RateLimit = cfg.Tushare.RateLimit
+	if result.Tushare.RateLimit <= 0 || result.Tushare.RateLimit > 500 {
+		result.Tushare.RateLimit = 200
+	}
+	if result.Tushare.Token != "" {
+		log.Printf("Tushare Pro 已配置 (token: %s***)", result.Tushare.Token[:min(6, len(result.Tushare.Token))])
+	} else {
+		log.Printf("Tushare Pro 未配置 (token 为空，Tushare Tool 将不注册)")
+	}
+
 	if result.RSSHub.BaseURL == "" {
 		result.RSSHub.BaseURL = "https://rsshub.app"
 	}
@@ -511,4 +555,11 @@ func normalize(cfg AppConfig) (NormalizedConfig, error) {
 		return NormalizedConfig{}, errors.New("missing_access_api_keys")
 	}
 	return result, nil
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
