@@ -10,6 +10,7 @@ import (
 
 	"genFu/internal/agent"
 	"genFu/internal/generate"
+	"genFu/internal/indicator"
 	"genFu/internal/message"
 	"genFu/internal/tool"
 )
@@ -24,6 +25,7 @@ type Analyzer struct {
 	registry       *tool.Registry
 	repo           *Repository
 	titleGenerator *TitleGenerator
+	technical      agent.Agent // optional technical indicator analysis agent
 }
 
 type FundHolding struct {
@@ -62,6 +64,13 @@ func NewAnalyzer(kline agent.Agent, manager agent.Agent, bull agent.Agent, bear 
 	return a
 }
 
+// SetTechnicalAgent sets the optional technical analysis agent.
+func (a *Analyzer) SetTechnicalAgent(ta agent.Agent) {
+	if a != nil {
+		a.technical = ta
+	}
+}
+
 // GetRepo returns the repository for external use
 func (a *Analyzer) GetRepo() *Repository {
 	if a == nil {
@@ -97,6 +106,20 @@ func (a *Analyzer) AnalyzeSteps(ctx context.Context, req AnalyzeRequest, onStep 
 	steps := []AnalyzeStep{}
 
 	req = a.enrichMarketData(ctx, req)
+	// 技术分析（非阻断）
+	if a.technical != nil && req.Meta != nil && req.Meta["indicators"] != "" {
+		if ta, err := a.technical.Run(ctx, req.Meta["indicators"]); err == nil {
+			techStep := AnalyzeStep{
+				Name:   "technical",
+				Input:  "indicator data",
+				Output: ta,
+			}
+			steps = append(steps, techStep)
+			if onStep != nil {
+				onStep(techStep)
+			}
+		}
+	}
 	if strings.ToLower(strings.TrimSpace(req.Type)) == "stock" && strings.TrimSpace(req.Kline) == "" {
 		if req.Meta == nil || strings.TrimSpace(req.Meta["kline_error"]) == "" {
 			return nil, "", StepError{Step: "kline", Err: errors.New("missing_kline")}
@@ -290,7 +313,79 @@ func (a *Analyzer) enrichMarketData(ctx context.Context, req AnalyzeRequest) Ana
 			req.Meta["intraday_error"] = pickErrorString(err, result.Error)
 		}
 	}
+	// 技术指标计算（非阻断）
+	a.enrichWithIndicators(ctx, &req)
 	return req
+}
+
+func (a *Analyzer) enrichWithIndicators(ctx context.Context, req *AnalyzeRequest) {
+	if req.Kline == "" {
+		return
+	}
+	// Parse kline data into indicator points
+	var rawPoints []struct {
+		Date  string  `json:"date"`
+		Open  float64 `json:"open"`
+		High  float64 `json:"high"`
+		Low   float64 `json:"low"`
+		Close float64 `json:"close"`
+		Vol   float64 `json:"vol"`
+	}
+	if err := json.Unmarshal([]byte(req.Kline), &rawPoints); err != nil {
+		return // silent fail - non-blocking
+	}
+	if len(rawPoints) < 2 {
+		return
+	}
+	points := make([]indicator.KlinePoint, len(rawPoints))
+	for i, rp := range rawPoints {
+		points[i] = indicator.KlinePoint{
+			Time:   rp.Date,
+			Open:   rp.Open,
+			High:   rp.High,
+			Low:    rp.Low,
+			Close:  rp.Close,
+			Volume: rp.Vol,
+		}
+	}
+	opts := buildIndicatorOptions(req.Indicators)
+	result, err := indicator.CalcAll(points, opts...)
+	if err != nil {
+		return
+	}
+	result.Symbol = req.Symbol
+	if req.Meta == nil {
+		req.Meta = map[string]string{}
+	}
+	if resultJSON, err := json.Marshal(result); err == nil {
+		req.Meta["indicators"] = string(resultJSON)
+	}
+	if latestJSON, err := json.Marshal(result.Latest); err == nil {
+		req.Meta["indicators_latest"] = string(latestJSON)
+	}
+	if len(result.Signals) > 0 {
+		if sigJSON, err := json.Marshal(result.Signals); err == nil {
+			req.Meta["indicators_signals"] = string(sigJSON)
+		}
+	}
+}
+
+func buildIndicatorOptions(indicators []string) []indicator.Option {
+	if len(indicators) == 0 {
+		return nil // CalcAll defaults to all indicators
+	}
+	var opts []indicator.Option
+	for _, name := range indicators {
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "macd":
+			opts = append(opts, indicator.WithMACD(indicator.DefaultMACDParams()))
+		case "rsi":
+			opts = append(opts, indicator.WithRSI(indicator.DefaultRSIParams()))
+		case "bollinger", "bb", "布林带", "boll":
+			opts = append(opts, indicator.WithBollinger(indicator.DefaultBollingerParams()))
+		}
+	}
+	return opts
 }
 
 func (a *Analyzer) estimateFundKline(ctx context.Context, req AnalyzeRequest) (string, error) {

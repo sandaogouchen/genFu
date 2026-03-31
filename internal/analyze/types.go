@@ -12,6 +12,7 @@ type AnalyzeRequest struct {
 	SessionID    string            `json:"session_id,omitempty"`
 	SessionTitle string            `json:"session_title,omitempty"`
 	Prompt       string            `json:"prompt,omitempty"`
+	Indicators   []string          `json:"indicators,omitempty"`
 }
 
 type AnalyzeStep struct {
@@ -28,4 +29,5 @@ type AnalyzeResponse struct {
 	Steps    []AnalyzeStep `json:"steps"`
 	Summary  string        `json:"summary"`
 	ReportID int64         `json:"report_id,omitempty"`
+	TechnicalAnalysis string `json:"technical_analysis,omitempty"`
 }
