@@ -88,3 +88,13 @@ access:
     - "/healthz"
     - "/docs"
     - "/openapi.json"
+
+# Dynamic Stop-Loss / Take-Profit Rule Engine
+rule_engine:
+  enabled: false
+  poll_interval: "30s"
+  default_cooldown: "5m"
+  trading_hours:
+    start: "09:30"
+    end: "16:00"
+    timezone: "America/New_York"
