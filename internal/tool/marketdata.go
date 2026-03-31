@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"genFu/internal/investment"
+	"genFu/internal/tushare"
 )
 
 type KlinePoint struct {
@@ -63,8 +65,33 @@ type HoldingMarketData struct {
 	Error      string                `json:"error,omitempty"`
 }
 
+type StockQuote struct {
+	Symbol    string  `json:"symbol"`
+	Date      string  `json:"date"`
+	Open      float64 `json:"open"`
+	High      float64 `json:"high"`
+	Low       float64 `json:"low"`
+	Price     float64 `json:"price"`
+	PreClose  float64 `json:"pre_close"`
+	Change    float64 `json:"change"`
+	ChangePct float64 `json:"change_pct"`
+	Volume    int64   `json:"volume"`
+	Turnover  float64 `json:"turnover"`
+}
+
+type KLineData struct {
+	Date     string  `json:"date"`
+	Open     float64 `json:"open"`
+	High     float64 `json:"high"`
+	Low      float64 `json:"low"`
+	Close    float64 `json:"close"`
+	Volume   int64   `json:"volume"`
+	Turnover float64 `json:"turnover"`
+}
+
 type MarketDataTool struct {
 	investmentSvc *investment.Service
+	tsFallback    *tushare.Client
 }
 
 var (
@@ -74,6 +101,13 @@ var (
 
 func NewMarketDataTool(svc *investment.Service) MarketDataTool {
 	return MarketDataTool{investmentSvc: svc}
+}
+
+// SetTushareFallback sets the structured Tushare client as fallback.
+// When set, if the raw HTTP call fails, the MarketDataTool will retry
+// using the structured client (which has proper rate limiting and retry).
+func (m *MarketDataTool) SetTushareFallback(client *tushare.Client) {
+	m.tsFallback = client
 }
 
 func (t MarketDataTool) Spec() ToolSpec {
@@ -168,6 +202,118 @@ func (t MarketDataTool) Execute(ctx context.Context, args map[string]interface{}
 		return ToolResult{Name: "marketdata", Error: "unsupported_action"}, errors.New("unsupported_action")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GetStockQuote – with structured Tushare fallback
+// ---------------------------------------------------------------------------
+
+func (m *MarketDataTool) GetStockQuote(symbol string) (*StockQuote, error) {
+	symbol = normalizeSymbol(symbol)
+
+	quote, err := m.getStockQuoteRaw(symbol)
+	if err == nil {
+		return quote, nil
+	}
+
+	// Fallback to structured Tushare client
+	if m.tsFallback != nil {
+		log.Printf("marketdata: raw 请求失败 (%v)，尝试结构化 Tushare 客户端", err)
+		return m.getStockQuoteFallback(symbol)
+	}
+
+	return nil, err
+}
+
+func (m *MarketDataTool) getStockQuoteRaw(symbol string) (*StockQuote, error) {
+	// TODO: implement raw HTTP POST to api.tushare.pro with m.apiKey
+	return nil, errors.New("getStockQuoteRaw: not implemented")
+}
+
+func (m *MarketDataTool) getStockQuoteFallback(symbol string) (*StockQuote, error) {
+	ctx := context.Background()
+	bars, err := m.tsFallback.Daily(ctx, symbol, time.Now().Format("20060102"), time.Now().Format("20060102"))
+	if err != nil {
+		return nil, fmt.Errorf("tushare fallback failed: %w", err)
+	}
+	if len(bars) == 0 {
+		return nil, fmt.Errorf("tushare fallback: no data returned")
+	}
+	bar := bars[0]
+	return &StockQuote{
+		Symbol:    bar.TsCode,
+		Date:      bar.TradeDate,
+		Open:      bar.Open,
+		High:      bar.High,
+		Low:       bar.Low,
+		Price:     bar.Close,
+		PreClose:  bar.PreClose,
+		Change:    bar.Change,
+		ChangePct: bar.PctChg,
+		Volume:    int64(bar.Vol),
+		Turnover:  bar.Amount,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// GetKLineData – with structured Tushare fallback
+// ---------------------------------------------------------------------------
+
+func (m *MarketDataTool) GetKLineData(symbol string, startDate string, endDate string, period string) ([]KLineData, error) {
+	symbol = normalizeSymbol(symbol)
+
+	klines, err := m.getKLineDataRaw(symbol, startDate, endDate, period)
+	if err == nil {
+		return klines, nil
+	}
+
+	if m.tsFallback != nil {
+		log.Printf("marketdata: raw K线请求失败 (%v)，尝试结构化 Tushare 客户端", err)
+		return m.getKLineDataFallback(symbol, startDate, endDate, period)
+	}
+
+	return nil, err
+}
+
+func (m *MarketDataTool) getKLineDataRaw(symbol, startDate, endDate, period string) ([]KLineData, error) {
+	// TODO: implement raw HTTP POST to api.tushare.pro with m.apiKey
+	return nil, errors.New("getKLineDataRaw: not implemented")
+}
+
+func (m *MarketDataTool) getKLineDataFallback(symbol, startDate, endDate, period string) ([]KLineData, error) {
+	ctx := context.Background()
+	var bars []tushare.DailyBar
+	var err error
+
+	switch period {
+	case "weekly":
+		bars, err = m.tsFallback.Weekly(ctx, symbol, startDate, endDate)
+	case "monthly":
+		bars, err = m.tsFallback.Monthly(ctx, symbol, startDate, endDate)
+	default:
+		bars, err = m.tsFallback.Daily(ctx, symbol, startDate, endDate)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("tushare fallback failed: %w", err)
+	}
+
+	klines := make([]KLineData, 0, len(bars))
+	for _, bar := range bars {
+		klines = append(klines, KLineData{
+			Date:     tushare.FormatDate(bar.TradeDate),
+			Open:     bar.Open,
+			High:     bar.High,
+			Low:      bar.Low,
+			Close:    bar.Close,
+			Volume:   int64(bar.Vol),
+			Turnover: bar.Amount,
+		})
+	}
+	return klines, nil
+}
+
+// ---------------------------------------------------------------------------
+// Existing helpers and implementations below
+// ---------------------------------------------------------------------------
 
 func normalizeMarketDataAction(args map[string]interface{}, rawAction string) string {
 	action := strings.ToLower(strings.TrimSpace(rawAction))
