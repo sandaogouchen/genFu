@@ -41,6 +41,7 @@ import (
 	stockpicker "genFu/internal/stockpicker"
 	"genFu/internal/tool"
 	"genFu/internal/trade_signal"
+	"genFu/internal/tushare"
 	"genFu/internal/workflow"
 )
 
@@ -77,10 +78,29 @@ func main() {
 		Referer:     appConfig.EastMoney.Referer,
 		UserAgent:   appConfig.EastMoney.UserAgent,
 	})
+
+	// --- Tushare Pro ---
+	var tushareTool *tool.TushareTool
+	if appConfig.Tushare.Token != "" {
+		tsCfg := tushare.Config{
+			Token:      appConfig.Tushare.Token,
+			BaseURL:    appConfig.Tushare.BaseURL,
+			Timeout:    appConfig.Tushare.Timeout,
+			MaxRetries: appConfig.Tushare.MaxRetries,
+			RateLimit:  appConfig.Tushare.RateLimit,
+		}
+		tsClient := tushare.NewClient(tsCfg)
+		tushareTool = tool.NewTushareTool(tsClient)
+	}
+
 	registry.Register(tool.NewInvestmentToolWithEastMoney(investmentSvc, eastMoneyTool))
 	registry.Register(eastMoneyTool)
 	registry.Register(tool.NewMarketDataTool(investmentSvc))
 	registry.Register(tool.NewCNInfoTool())
+	if tushareTool != nil {
+		registry.Register(tushareTool)
+		log.Printf("Tushare Tool 已注册")
+	}
 	newsRepo := news.NewRepository(database)
 	registry.Register(tool.NewBriefSearchTool(newsRepo))
 	analyzeRepo := analyze.NewRepository(database)
