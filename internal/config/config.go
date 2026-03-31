@@ -11,17 +11,18 @@ import (
 )
 
 type AppConfig struct {
-	Server    ServerConfig    `yaml:"server"`
-	PG        PGConfig        `yaml:"pg"`
-	LLM       LLMConfig       `yaml:"llm"`
-	Embedding EmbeddingConfig `yaml:"embedding"`
-	EastMoney EastMoneyConfig `yaml:"eastmoney"`
-	Tushare   TushareConfig   `yaml:"tushare"`
-	RSSHub    RSSHubConfig    `yaml:"rsshub"`
-	News      NewsConfig      `yaml:"news"`
-	Decision  DecisionConfig  `yaml:"decision"`
-	NextOpen  NextOpenConfig  `yaml:"next_open"`
-	Access    AccessConfig    `yaml:"access"`
+	Server     ServerConfig     `yaml:"server"`
+	PG         PGConfig         `yaml:"pg"`
+	LLM        LLMConfig        `yaml:"llm"`
+	Embedding  EmbeddingConfig  `yaml:"embedding"`
+	EastMoney  EastMoneyConfig  `yaml:"eastmoney"`
+	Tushare    TushareConfig    `yaml:"tushare"`
+	RSSHub     RSSHubConfig     `yaml:"rsshub"`
+	News       NewsConfig       `yaml:"news"`
+	Decision   DecisionConfig   `yaml:"decision"`
+	NextOpen   NextOpenConfig   `yaml:"next_open"`
+	Access     AccessConfig     `yaml:"access"`
+	RuleEngine RuleEngineConfig `yaml:"rule_engine,omitempty"`
 }
 
 type ServerConfig struct {
@@ -120,6 +121,18 @@ type AccessConfig struct {
 	Enabled    bool     `yaml:"enabled"`
 	APIKeys    []string `yaml:"api_keys"`
 	AllowPaths []string `yaml:"allow_paths"`
+}
+
+// RuleEngineConfig holds configuration for the dynamic SL/TP rule engine.
+type RuleEngineConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	PollInterval  string `yaml:"poll_interval"`
+	DefaultCooldown string `yaml:"default_cooldown"`
+	TradingHours  struct {
+		Start    string `yaml:"start"`
+		End      string `yaml:"end"`
+		Timezone string `yaml:"timezone"`
+	} `yaml:"trading_hours"`
 }
 
 type NormalizedConfig struct {
