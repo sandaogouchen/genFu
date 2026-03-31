@@ -15,6 +15,8 @@ type PDFAgent interface {
 
 type Service struct {
 	client   *CNInfoClient
+	sse      *SSEClient
+	szse     *SZSEClient
 	repo     *Repository
 	pdfAgent PDFAgent
 }
@@ -22,6 +24,8 @@ type Service struct {
 func NewService(repo *Repository, pdfAgent PDFAgent) *Service {
 	return &Service{
 		client:   NewCNInfoClient(),
+		sse:      NewSSEClient(),
+		szse:     NewSZSEClient(),
 		repo:     repo,
 		pdfAgent: pdfAgent,
 	}
@@ -35,12 +39,11 @@ func (s *Service) GetReportSummary(ctx context.Context, symbol string) (*ReportS
 		return nil, err
 	}
 	if len(cached) > 0 {
-		// 返回最新的一份摘要
 		return s.parseReportSummary(&cached[0]), nil
 	}
 
-	// 2. 查询公告列表
-	announcements, err := s.client.QueryAnnouncements(ctx, symbol, 1, 5)
+	// 2. 查询公告列表——使用向后兼容的默认参数（年报 + 深交所 + 近 2 年）
+	announcements, err := s.client.QueryAnnouncementsLegacy(ctx, symbol, 1, 5)
 	if err != nil {
 		return nil, fmt.Errorf("query announcements: %w", err)
 	}
@@ -75,6 +78,9 @@ func (s *Service) GetReportSummary(ctx context.Context, symbol string) (*ReportS
 		AnnouncementDate: time.Unix(reportAnn.AnnouncementTime/1000, 0),
 		PDFURL:           s.client.GetPDFDownloadURL(reportAnn),
 		Summary:          summary.Summary,
+		Column:           reportAnn.Column,
+		CategoryCode:     reportAnn.Category,
+		ImportantLevel:   reportAnn.ImportantLevel,
 	}
 	if metricsJSON, err := json.Marshal(summary.KeyMetrics); err == nil {
 		report.KeyMetrics = string(metricsJSON)
@@ -86,7 +92,7 @@ func (s *Service) GetReportSummary(ctx context.Context, symbol string) (*ReportS
 
 // isFinancialReport 判断是否为财报类型公告
 func (s *Service) isFinancialReport(title string) bool {
-	keywords := []string{"年度报告", "半年度报告", "季度报告", "季报", "年报", "财务报告", "业绩��告", "业绩快报"}
+	keywords := []string{"年度报告", "半年度报告", "季度报告", "季报", "年报", "财务报告", "业绩报告", "业绩快报"}
 	for _, kw := range keywords {
 		if strings.Contains(title, kw) {
 			return true
@@ -98,11 +104,11 @@ func (s *Service) isFinancialReport(title string) bool {
 // parseReportSummary 从数据库记录解析摘要
 func (s *Service) parseReportSummary(report *FinancialReport) *ReportSummary {
 	summary := &ReportSummary{
-		Symbol:       report.Symbol,
-		ReportTitle:  report.Title,
-		ReportType:   report.ReportType,
-		Summary:      report.Summary,
-		GeneratedAt:  report.UpdatedAt,
+		Symbol:      report.Symbol,
+		ReportTitle: report.Title,
+		ReportType:  report.ReportType,
+		Summary:     report.Summary,
+		GeneratedAt: report.UpdatedAt,
 	}
 	if report.KeyMetrics != "" {
 		_ = json.Unmarshal([]byte(report.KeyMetrics), &summary.KeyMetrics)
