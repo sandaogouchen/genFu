@@ -1,38 +1,47 @@
-# internal/agent/prompt/
+# internal/agent/prompt — Agent Prompt 模板分析
 
-> **分析时间**: 2026-03-31T20:00:00+08:00
-> **源分支**: `main` | **分析提交**: `04bd5e16fa7d`
-> **直接源文件数**: 10
-> **直接子目录**: 无
+## 模块概述
 
-## 目录职责概述
+本目录存放所有 LLM Agent 的 System Prompt 模板文件。对于 Checklist 整合问题，最关键的是 `decision.md`。
 
-集中存放部分 Agent 的 Prompt 模板文件。每个 `.md` 文件对应一个 Agent 的系统提示。
+---
 
-## 文件分析
+## 🔴 decision.md 深度审查
 
-### §1 `bear.md` — 看空 Agent Prompt
-### §2 `bull.md` — 看多 Agent Prompt
-### §3 `debate.md` — 辩论 Agent Prompt
-### §4 `decision.md` ⭐ (~3.6KB) — 决策 Agent Prompt
-- §4.1 定义了 Decision Agent 可用的工具：marketdata、eastmoney、investment
-- §4.2 要求输出严格 JSON 格式：`decisions[].action/quantity/price/confidence/reason`
-- §4.3 **注意**: 虽然 trade_guide 数据会被注入上下文，但 prompt 中对如何使用 guide 信息的指导非常有限
-### §5 `execution_planner.md` — 执行计划 Agent Prompt
-### §6 `fund_manager.md` — 基金经理 Agent Prompt
-### §7 `kline.md` — K线分析 Agent Prompt
-### §8 `ocr_holdings.md` — OCR 持仓识别 Agent Prompt
-### §9 `post_trade_review.md` — 交易复盘 Agent Prompt
-### §10 `summary.md` — 摘要 Agent Prompt
+### 内容结构
 
-## 本目录内部依赖关系
+1. 角色定义（1行）
+2. 可用工具列表（marketdata/eastmoney/investment，详细参数说明）
+3. 工作流程（4步）
+4. 重要提示（工具使用强制）
+5. 输出格式（DecisionOutput JSON schema）
+6. 规则（5条约束）
+7. 决策说明要求（hold/buy/sell 的 reason 示例）
 
-无（纯模板文件，被各 Agent 的 agent.go 引用）
+### 缺失内容清单
 
-## 对外暴露接口
+| 应包含内容 | 当前状态 | 影响级别 |
+|-----------|---------|----------|
+| `selected_trade_guides` 字段说明 | ❌ 完全缺失 | 🔴 致命 |
+| 如何评估 trade guide 的 buy/sell conditions | ❌ 完全缺失 | 🔴 致命 |
+| trade guide 对 confidence 评分的影响 | ❌ 完全缺失 | 🔴 严重 |
+| trade guide 的 stop_loss/take_profit 使用 | ❌ 完全缺失 | 🟡 中等 |
+| trade guide 的 risk_monitors 使用 | ❌ 完全缺失 | 🟡 中等 |
+| reason 字段应引用 guide 规则匹配情况 | ❌ 完全缺失 | 🟡 中等 |
 
-每个 `.md` 文件被对应 Agent 的 `NewLLMAgentFromFile()` 加载
+### Prompt 质量对比
 
-## 补充观察
+| 维度 | stockpicker/prompt.md | decision.md | 差距 |
+|------|----------------------|-------------|------|
+| 大小 | 7678B | 3608B | 决策端仅一半 |
+| Trade Guide | 详细 guide 输出要求 | ❌ 完全无 | 🔴 致命差距 |
 
-`decision.md` 是交易指南消费链路的关键环节。当前 prompt 对 trade guide 的使用指导不足，建议增加明确的推理步骤要求（如 "先检查 trade_guide 中的买卖规则，再做出决策"）。
+---
+
+## 改进方案: decision.md 重写建议
+
+在 Prompt 中添加交易指南评估章节：
+- 定义评估步骤（获取实时行情 → 逐条评估条件 → 计算匹配率）
+- 定义基于匹配率的决策逻辑（≥80% 强执行 → 40-59% 参考 → <20% 可能失效）
+- 要求 reason 字段包含匹配率和触发规则列表
+- 要求使用 guide 的 stop_loss/take_profit 作为风控参考
