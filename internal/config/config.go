@@ -11,18 +11,19 @@ import (
 )
 
 type AppConfig struct {
-	Server    ServerConfig    `yaml:"server"`
-	PG        PGConfig        `yaml:"pg"`
-	LLM       LLMConfig       `yaml:"llm"`
-	Embedding EmbeddingConfig `yaml:"embedding"`
-	EastMoney EastMoneyConfig `yaml:"eastmoney"`
-	Tushare   TushareConfig   `yaml:"tushare"`
-	RSSHub    RSSHubConfig    `yaml:"rsshub"`
-	News      NewsConfig      `yaml:"news"`
-	Decision  DecisionConfig  `yaml:"decision"`
-	NextOpen  NextOpenConfig  `yaml:"next_open"`
-	Access    AccessConfig    `yaml:"access"`
-	Dashboard DashboardConfig `yaml:"dashboard"`
+	Server     ServerConfig     `yaml:"server"`
+	PG         PGConfig         `yaml:"pg"`
+	LLM        LLMConfig        `yaml:"llm"`
+	Embedding  EmbeddingConfig  `yaml:"embedding"`
+	EastMoney  EastMoneyConfig  `yaml:"eastmoney"`
+	Tushare    TushareConfig    `yaml:"tushare"`
+	RSSHub     RSSHubConfig     `yaml:"rsshub"`
+	News       NewsConfig       `yaml:"news"`
+	Decision   DecisionConfig   `yaml:"decision"`
+	NextOpen   NextOpenConfig   `yaml:"next_open"`
+	Access     AccessConfig     `yaml:"access"`
+	Dashboard  DashboardConfig  `yaml:"dashboard"`
+	RuleEngine RuleEngineConfig `yaml:"rule_engine,omitempty"`
 }
 
 type ServerConfig struct {
@@ -131,26 +132,39 @@ type DashboardConfig struct {
 	OfflineMode bool   `yaml:"offline_mode"`
 }
 
+// RuleEngineConfig holds configuration for the dynamic SL/TP rule engine.
+type RuleEngineConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	PollInterval  string `yaml:"poll_interval"`
+	DefaultCooldown string `yaml:"default_cooldown"`
+	TradingHours  struct {
+		Start    string `yaml:"start"`
+		End      string `yaml:"end"`
+		Timezone string `yaml:"timezone"`
+	} `yaml:"trading_hours"`
+}
+
 
 type NormalizedConfig struct {
-	Server    ServerConfig
-	PG        NormalizedPGConfig
-	LLM       NormalizedLLMConfig
-	Embedding NormalizedEmbeddingConfig
-	EastMoney NormalizedEastMoneyConfig
-	Tushare   struct {
+	Server     ServerConfig
+	PG         NormalizedPGConfig
+	LLM        NormalizedLLMConfig
+	Embedding  NormalizedEmbeddingConfig
+	EastMoney  NormalizedEastMoneyConfig
+	Tushare    struct {
 		Token      string
 		BaseURL    string
 		Timeout    time.Duration
 		MaxRetries int
 		RateLimit  int
 	}
-	RSSHub   NormalizedRSSHubConfig
-	News     NormalizedNewsConfig
-	Decision NormalizedDecisionConfig
-	NextOpen NormalizedNextOpenConfig
-	Access    NormalizedAccessConfig
-	Dashboard NormalizedDashboardConfig
+	RSSHub     NormalizedRSSHubConfig
+	News       NormalizedNewsConfig
+	Decision   NormalizedDecisionConfig
+	NextOpen   NormalizedNextOpenConfig
+	Access     NormalizedAccessConfig
+	Dashboard  NormalizedDashboardConfig
+	RuleEngine RuleEngineConfig
 }
 
 type NormalizedPGConfig struct {
@@ -325,6 +339,7 @@ func normalize(cfg AppConfig) (NormalizedConfig, error) {
 			APIKeys:    cfg.Access.APIKeys,
 			AllowPaths: cfg.Access.AllowPaths,
 		},
+		RuleEngine: cfg.RuleEngine,
 	}
 	if result.Server.Port == 0 {
 		result.Server.Port = 8080
