@@ -1,56 +1,73 @@
-# internal/agent/tradeguidecompiler/
+# internal/agent/tradeguidecompiler — 交易指南编译 Agent 分析
 
-> **分析时间**: 2026-03-31T20:00:00+08:00
-> **源分支**: `main` | **分析提交**: `04bd5e16fa7d`
-> **直接源文件数**: 2
-> **直接子目录**: 无
+## 模块概述
 
-## 目录职责概述
+TradeGuideCompilerAgent 负责将选股阶段产出的 v1 确定性交易规则，通过 LLM 编译为更丰富的 v2 版本。它是 Checklist Pipeline 中唯一的 LLM 增强环节。
 
-TradeGuideCompiler Agent 是交易指南整合系统的 **LLM 编译核心**。它接收确定性规则（v1）和策略上下文，通过大模型生成结构化的 v2 交易指南。是整合 checklist 效果好坏的关键环节。
+### 文件结构
 
-## 文件分析
+| 文件 | 职责 | 大小 |
+|------|------|------|
+| `agent.go` | Agent 工厂函数，注册工具和 Prompt | 491B |
+| `prompt.md` | LLM System Prompt | 963B |
 
-### §1 `agent.go`
-- **类型**: Agent 工厂
-- **职责**: 创建 TradeGuideCompiler Agent 实例
-- §1.1 `New(model, registry)` — 调用 `agent.NewLLMAgentFromFile()` 创建
-  - Agent 名称: `"trade_guide_compiler_agent"`
-  - 技能标签: `["trade_rule_compilation", "rule_normalization", "json_schema_compilation"]`
-  - Prompt 文件: `internal/agent/tradeguidecompiler/prompt.md`
-- §1.2 使用 Eino 框架的 ToolCallingChatModel 接口
+---
 
-### §2 `prompt.md`
-- **类型**: LLM Prompt 模板
-- **职责**: 定义 TradeGuideCompiler Agent 的系统提示
-- §2.1 角色定义：要求 LLM 作为"交易规则编译器"
-- §2.2 输入要求：接收策略上下文、技术指标数据、已有 v1 规则
-- §2.3 **输出要求**：必须输出包含以下字段的严格 JSON：
-  - `stocks[].trade_guide_text` — 自然语言交易指南
-  - `stocks[].trade_guide_json` — v1 格式 JSON
-  - `stocks[].trade_guide_json_v2` — v2 格式 JSON
-  - `stocks[].trade_guide_version` — 版本号
-- §2.4 约束: "禁止输出非 JSON 内容"
-- §2.5 **核心问题**: Prompt 要求同时输出 v1 和 v2 两种 JSON 格式，且嵌套在外层 JSON 中（JSON-in-JSON），极易导致转义错误
+## 🔴 关键问题
 
-## 本目录内部依赖关系
+### 问题 1: Prompt 过于简陋（963 字节 vs stockpicker 的 7678 字节）
 
-- `agent.go` → `prompt.md`（加载 Prompt 模板）
+缺少：如何增强规则的具体指导、市场状态感知、质量标准、规则组合逻辑。
 
-## 对外暴露接口
+### 问题 2: v2 Schema 未得到充分定义
 
-- `New(model, registry)` — 返回 `agent.Agent` 接口
-- 被 `internal/stockpicker/service.go` 的 `runTradeGuideCompilerAgent()` 调用
+Prompt 只说 v2 "至少包含 schema_version, entries, exits, risk_controls"，但没有定义增强维度。
 
-## 补充观察
+### 问题 3: 未利用注册工具
 
-### 🔍 Prompt 设计问题
+Agent 注册了 `trade_rule_compilation`, `rule_normalization`, `json_schema_compilation` 三个工具，但 prompt 从未提及，导致编译器退化为纯 JSON 格式转换器。
 
-**问题 1: JSON-in-JSON 嵌套**
-Prompt 要求 LLM 输出的 JSON 中包含 `trade_guide_json` 和 `trade_guide_json_v2` 字段，这两个字段的值本身也是 JSON 字符串。这种嵌套导致 LLM 需要正确处理双重 JSON 转义，实际失败率很高。
+### 问题 4: 输入数据膨胀
 
-**问题 2: 双格式冗余**
-要求同时输出 v1 和 v2 格式，增加了 token 消耗和出错概率。实际上 v1 已经由确定性逻辑生成，LLM 只需要专注于 v2 即可。
+整个 stocks 数组（含所有嵌套字段）被全部序列化发送，信噪比低。
 
-**问题 3: 缺乏 Few-shot 示例**
-Prompt 中未提供输出示例，仅描述了格式要求。对于复杂的嵌套 JSON 输出，few-shot 示例对提高格式正确率至关重要。
+---
+
+## 🟡 改进方案
+
+### 方案 1: 重写 Prompt
+
+扩充至 3000-4000 字节，添加：
+- 基于 market_regime 的参数调整策略
+- v2 增强维度（required_signals_count, urgency, invalidation, trailing_stop, scale_in_rules 等）
+- 工具使用说明
+- 质量标准定义
+
+### 方案 2: 精简输入 Payload
+
+只传递编译所需的最小字段集。
+
+### 方案 3: 增加编译质量验证
+
+编译后对每只标的的 v2 JSON 进行结构验证。
+
+---
+
+## 模块在 Checklist Pipeline 中的定位
+
+```
+StockPicker.attachTradeGuides() → v1 确定性规则
+         │
+         ▼
+TradeGuideCompilerAgent.Handle() → 尝试编译 v2
+         │
+    ┌────┴────┐
+    ▼         ▼
+成功: v2 覆盖   失败: v1 机械转 v2
+         │
+         ▼
+GuideRepository.SaveGuide() → 持久化
+         │
+         ▼
+DecisionService.resolveGuideSelections() → 消费
+```
