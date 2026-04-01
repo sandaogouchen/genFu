@@ -195,6 +195,13 @@ func (s *Service) Decide(ctx context.Context, req DecisionRequest) (DecisionResp
 		return DecisionResponse{}, err
 	}
 
+	// Step 3.5: [Rule Engine Hook] Load SL/TP rules for position.
+	// When rule_engine is enabled, the monitor will independently evaluate
+	// stop-loss and take-profit conditions. This hook point is reserved for
+	// future inline integration where SL/TP prices from active rules can
+	// be attached to trade signals before they are emitted.
+	// TODO(rule-engine): Inject SL/TP prices from active rules into signal.
+
 	riskBudget := s.resolveRiskBudget(req.Meta)
 	warnings := []string{}
 	runID := int64(0)
