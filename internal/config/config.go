@@ -22,6 +22,7 @@ type AppConfig struct {
 	Decision   DecisionConfig   `yaml:"decision"`
 	NextOpen   NextOpenConfig   `yaml:"next_open"`
 	Access     AccessConfig     `yaml:"access"`
+	Dashboard  DashboardConfig  `yaml:"dashboard"`
 	RuleEngine RuleEngineConfig `yaml:"rule_engine,omitempty"`
 }
 
@@ -123,6 +124,14 @@ type AccessConfig struct {
 	AllowPaths []string `yaml:"allow_paths"`
 }
 
+// DashboardConfig raw YAML configuration for dashboard.
+type DashboardConfig struct {
+	ColorScheme string `yaml:"color_scheme"`
+	DefaultDays int    `yaml:"default_days"`
+	OutputDir   string `yaml:"output_dir"`
+	OfflineMode bool   `yaml:"offline_mode"`
+}
+
 // RuleEngineConfig holds configuration for the dynamic SL/TP rule engine.
 type RuleEngineConfig struct {
 	Enabled       bool   `yaml:"enabled"`
@@ -134,6 +143,7 @@ type RuleEngineConfig struct {
 		Timezone string `yaml:"timezone"`
 	} `yaml:"trading_hours"`
 }
+
 
 type NormalizedConfig struct {
 	Server     ServerConfig
@@ -153,6 +163,7 @@ type NormalizedConfig struct {
 	Decision   NormalizedDecisionConfig
 	NextOpen   NormalizedNextOpenConfig
 	Access     NormalizedAccessConfig
+	Dashboard  NormalizedDashboardConfig
 	RuleEngine RuleEngineConfig
 }
 
@@ -233,6 +244,15 @@ type NormalizedAccessConfig struct {
 	APIKeys    []string
 	AllowPaths []string
 }
+
+// NormalizedDashboardConfig parsed dashboard configuration.
+type NormalizedDashboardConfig struct {
+	ColorScheme string
+	DefaultDays int
+	OutputDir   string
+	OfflineMode bool
+}
+
 
 type NormalizedNextOpenConfig struct {
 	Enabled   bool
@@ -569,6 +589,22 @@ func normalize(cfg AppConfig) (NormalizedConfig, error) {
 	if result.Access.Enabled && len(result.Access.APIKeys) == 0 {
 		return NormalizedConfig{}, errors.New("missing_access_api_keys")
 	}
+	result.Dashboard = NormalizedDashboardConfig{
+		ColorScheme: cfg.Dashboard.ColorScheme,
+		DefaultDays: cfg.Dashboard.DefaultDays,
+		OutputDir:   cfg.Dashboard.OutputDir,
+		OfflineMode: cfg.Dashboard.OfflineMode,
+	}
+	if result.Dashboard.ColorScheme == "" {
+		result.Dashboard.ColorScheme = "cn"
+	}
+	if result.Dashboard.DefaultDays <= 0 {
+		result.Dashboard.DefaultDays = 30
+	}
+	if result.Dashboard.OutputDir == "" {
+		result.Dashboard.OutputDir = "output"
+	}
+
 	return result, nil
 }
 

@@ -23,12 +23,14 @@ import (
 	stockpickeragent "genFu/internal/agent/stockpicker"
 	stockscreener "genFu/internal/agent/stockscreener"
 	"genFu/internal/agent/summary"
+	"genFu/internal/agent/technical"
 	tradeguidecompileragent "genFu/internal/agent/tradeguidecompiler"
 	"genFu/internal/analyze"
 	"genFu/internal/api"
 	"genFu/internal/chat"
 	"genFu/internal/config"
 	"genFu/internal/conversationlog"
+	"genFu/internal/dashboard"
 	"genFu/internal/db"
 	decision "genFu/internal/decision"
 	"genFu/internal/financial"
@@ -105,6 +107,7 @@ func main() {
 	}
 	newsRepo := news.NewRepository(database)
 	registry.Register(tool.NewBriefSearchTool(newsRepo))
+	registry.Register(tool.NewIndicatorTool(registry)) // 注册技术指标计算工具
 	analyzeRepo := analyze.NewRepository(database)
 
 	log.Printf("使用直连LLM endpoint=%s model=%s", appConfig.LLM.Endpoint, appConfig.LLM.Model)
@@ -138,6 +141,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	technicalAgent := technical.New()
 	summaryAgent, err := summary.New(chatModel, registry)
 	if err != nil {
 		log.Fatal(err)
@@ -185,6 +189,7 @@ func main() {
 	stockpicker.RegisterStockStrategyTools(registry)
 
 	analyzer := analyze.NewAnalyzer(klineAgent, fundManagerAgent, bullAgent, bearAgent, debateAgent, summaryAgent, registry, analyzeRepo)
+	analyzer.SetTechnicalAgent(technicalAgent)
 	tradeEngine := trade_signal.NewInvestmentEngine(investmentSvc)
 	newsProvider := decision.NewBriefNewsProvider(newsRepo, investmentRepo, appConfig.News.AccountID, appConfig.News.BriefLimit, appConfig.News.Keywords)
 	decisionRepo := decision.NewRepository(database)
@@ -398,7 +403,15 @@ func main() {
 	r.AddRoute([]string{"辩论", "多空", "debate"}, debateAgent)
 
 	ocrHandler := api.NewOcrHoldingsHandler(appConfig.LLM, investmentSvc, "internal/agent/prompt/ocr_holdings.md")
-	srv := server.NewServer(r, registry, analyzer, decisionSvc, stockpickerSvc, stockpickerGuideRepo, chatService, stockWF, ocrHandler, newsPipeline, newsRepo, conversationRepo)
+	// --- Dashboard ---
+	dashDataSvc := dashboard.NewDataService(investmentSvc, investmentRepo)
+	dashColorScheme := dashboard.GetColorScheme(appConfig.Dashboard.ColorScheme)
+	dashGenerator := dashboard.NewHTMLGenerator(dashColorScheme)
+	dashHandler := dashboard.NewHandler(dashDataSvc, dashGenerator)
+	dashTool := tool.NewDashboardTool(dashDataSvc, dashGenerator, appConfig.Dashboard.OutputDir)
+	registry.Register(dashTool)
+
+	srv := server.NewServer(r, registry, analyzer, decisionSvc, stockpickerSvc, stockpickerGuideRepo, chatService, stockWF, ocrHandler, newsPipeline, newsRepo, conversationRepo, dashHandler)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 

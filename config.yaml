@@ -88,6 +88,11 @@ access:
     - "/healthz"
     - "/docs"
     - "/openapi.json"
+dashboard:
+  color_scheme: "cn"        # cn（红涨绿跌）| us（绿涨红跌）
+  default_days: 30           # 估值历史默认天数
+  output_dir: "output"       # HTML 仪表盘输出目录
+  offline_mode: false        # 离线模式（未来支持）
 
 # Dynamic Stop-Loss / Take-Profit Rule Engine
 rule_engine:
