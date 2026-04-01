@@ -3,13 +3,25 @@ package ruleengine
 import (
 	"fmt"
 	"strings"
+
+	"github.com/expr-lang/expr"
 )
 
 // EvaluateConditionGroup evaluates a ConditionGroup against an environment map.
 // If group is nil the evaluation vacuously succeeds (no conditions = always pass).
+//
+// Evaluation modes:
+//   - If group.Expression is set, it is compiled and run via expr-lang directly.
+//   - Otherwise, structured Conditions and sub-Groups are evaluated with AND/OR logic,
+//     and each individual Condition is compiled to an expr expression internally.
 func EvaluateConditionGroup(group *ConditionGroup, env map[string]interface{}) (bool, error) {
 	if group == nil {
 		return true, nil
+	}
+
+	// Raw expression mode: compile and run the expression directly.
+	if group.Expression != "" {
+		return evaluateExpression(group.Expression, env)
 	}
 
 	op := strings.ToLower(group.Operator)
@@ -25,6 +37,24 @@ func EvaluateConditionGroup(group *ConditionGroup, env map[string]interface{}) (
 	default:
 		return false, fmt.Errorf("unsupported condition group operator: %q", group.Operator)
 	}
+}
+
+// evaluateExpression compiles and runs an arbitrary expr-lang expression against
+// the provided environment. The expression must evaluate to a boolean.
+func evaluateExpression(expression string, env map[string]interface{}) (bool, error) {
+	program, err := expr.Compile(expression, expr.Env(env), expr.AsBool())
+	if err != nil {
+		return false, fmt.Errorf("compile expression %q: %w", expression, err)
+	}
+	output, err := expr.Run(program, env)
+	if err != nil {
+		return false, fmt.Errorf("run expression %q: %w", expression, err)
+	}
+	result, ok := output.(bool)
+	if !ok {
+		return false, fmt.Errorf("expression %q returned %T, expected bool", expression, output)
+	}
+	return result, nil
 }
 
 // evaluateAnd returns true only when every condition and every sub-group is true.
@@ -73,75 +103,63 @@ func evaluateOr(group *ConditionGroup, env map[string]interface{}) (bool, error)
 	return false, nil
 }
 
-// evaluateCondition evaluates a single Condition against the environment.
+// evaluateCondition evaluates a single structured Condition by compiling it
+// into an expr-lang expression and running it against the environment.
 func evaluateCondition(cond *Condition, env map[string]interface{}) (bool, error) {
-	raw, ok := env[cond.Field]
-	if !ok {
-		return false, fmt.Errorf("field %q not found in environment", cond.Field)
-	}
-
-	op := strings.ToLower(cond.Operator)
-
-	// cross_above and cross_below are placeholders that require historical data.
-	// For now they always evaluate to true.
-	if op == "cross_above" || op == "cross_below" {
-		return true, nil
-	}
-
-	lhs, err := toFloat64(raw)
+	expression, err := conditionToExpr(cond)
 	if err != nil {
-		return false, fmt.Errorf("field %q: %w", cond.Field, err)
+		return false, err
 	}
-
-	rhs, err := toFloat64(cond.Value)
-	if err != nil {
-		return false, fmt.Errorf("condition value for field %q: %w", cond.Field, err)
-	}
-
-	switch op {
-	case "gte":
-		return lhs >= rhs, nil
-	case "lte":
-		return lhs <= rhs, nil
-	case "gt":
-		return lhs > rhs, nil
-	case "lt":
-		return lhs < rhs, nil
-	case "eq":
-		return lhs == rhs, nil
-	default:
-		return false, fmt.Errorf("unsupported condition operator: %q", cond.Operator)
-	}
+	return evaluateExpression(expression, env)
 }
 
-// toFloat64 attempts to convert an arbitrary value to float64.
-func toFloat64(v interface{}) (float64, error) {
-	switch n := v.(type) {
-	case float64:
-		return n, nil
-	case float32:
-		return float64(n), nil
-	case int:
-		return float64(n), nil
-	case int8:
-		return float64(n), nil
-	case int16:
-		return float64(n), nil
-	case int32:
-		return float64(n), nil
-	case int64:
-		return float64(n), nil
-	case uint:
-		return float64(n), nil
-	case uint8:
-		return float64(n), nil
-	case uint16:
-		return float64(n), nil
-	case uint32:
-		return float64(n), nil
-	case uint64:
-		return float64(n), nil
+// conditionToExpr converts a structured Condition (Field/Operator/Value) to
+// an expr-lang expression string. For example:
+//
+//	{Field: "pnl_pct", Operator: "gte", Value: 5.0} → "pnl_pct >= 5"
+func conditionToExpr(cond *Condition) (string, error) {
+	op := strings.ToLower(cond.Operator)
+
+	var exprOp string
+	switch op {
+	case "gte":
+		exprOp = ">="
+	case "lte":
+		exprOp = "<="
+	case "gt":
+		exprOp = ">"
+	case "lt":
+		exprOp = "<"
+	case "eq":
+		exprOp = "=="
+	case "neq", "ne":
+		exprOp = "!="
+	case "cross_above":
+		// Placeholder: cross_above requires historical tick data; defaults to true.
+		return "true", nil
+	case "cross_below":
+		// Placeholder: cross_below requires historical tick data; defaults to true.
+		return "true", nil
 	default:
-		return 0, fmt.Errorf("cannot convert %T to float64", v)
+		return "", fmt.Errorf("unsupported condition operator: %q", cond.Operator)
 	}
+
+	// Format the RHS value based on its Go type.
+	var valueStr string
+	switch v := cond.Value.(type) {
+	case float64:
+		valueStr = fmt.Sprintf("%g", v)
+	case float32:
+		valueStr = fmt.Sprintf("%g", v)
+	case int:
+		valueStr = fmt.Sprintf("%d", v)
+	case int64:
+		valueStr = fmt.Sprintf("%d", v)
+	case string:
+		valueStr = fmt.Sprintf("%q", v)
+	default:
+		valueStr = fmt.Sprintf("%v", v)
+	}
+
+	return fmt.Sprintf("%s %s %s", cond.Field, exprOp, valueStr), nil
 }
