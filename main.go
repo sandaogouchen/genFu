@@ -43,6 +43,7 @@ import (
 	"genFu/internal/tool"
 	"genFu/internal/trade_signal"
 	"genFu/internal/tushare"
+	"genFu/internal/dashboard"
 	"genFu/internal/workflow"
 )
 
@@ -369,7 +370,15 @@ func main() {
 	r.AddRoute([]string{"辩论", "多空", "debate"}, debateAgent)
 
 	ocrHandler := api.NewOcrHoldingsHandler(appConfig.LLM, investmentSvc, "internal/agent/prompt/ocr_holdings.md")
-	srv := server.NewServer(r, registry, analyzer, decisionSvc, stockpickerSvc, stockpickerGuideRepo, chatService, stockWF, ocrHandler, newsPipeline, newsRepo, conversationRepo)
+	// --- Dashboard ---
+	dashDataSvc := dashboard.NewDataService(investmentSvc, investmentRepo)
+	dashColorScheme := dashboard.GetColorScheme(appConfig.Dashboard.ColorScheme)
+	dashGenerator := dashboard.NewHTMLGenerator(dashColorScheme)
+	dashHandler := dashboard.NewHandler(dashDataSvc, dashGenerator)
+	dashTool := tool.NewDashboardTool(dashDataSvc, dashGenerator, appConfig.Dashboard.OutputDir)
+	registry.Register(dashTool)
+
+	srv := server.NewServer(r, registry, analyzer, decisionSvc, stockpickerSvc, stockpickerGuideRepo, chatService, stockWF, ocrHandler, newsPipeline, newsRepo, conversationRepo, dashHandler)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 

@@ -14,6 +14,7 @@ import (
 	"genFu/internal/news"
 	"genFu/internal/router"
 	stockpicker "genFu/internal/stockpicker"
+	"genFu/internal/dashboard"
 	"genFu/internal/tool"
 	"genFu/internal/workflow"
 	"genFu/internal/ws"
@@ -32,9 +33,10 @@ type Server struct {
 	newsPipeline     *news.Pipeline
 	newsRepo         *news.Repository
 	conversationLogs *conversationlog.Repository
+	dashboardHandler *dashboard.Handler
 }
 
-func NewServer(r *router.Router, registry *tool.Registry, analyzer *analyze.Analyzer, decisionSvc *decision.Service, stockpickerSvc *stockpicker.Service, stockpickerGuide *stockpicker.GuideRepository, chatSvc *chat.Service, stockWF *workflow.StockWorkflow, ocr http.Handler, newsPipeline *news.Pipeline, newsRepo *news.Repository, conversationLogs *conversationlog.Repository) *Server {
+func NewServer(r *router.Router, registry *tool.Registry, analyzer *analyze.Analyzer, decisionSvc *decision.Service, stockpickerSvc *stockpicker.Service, stockpickerGuide *stockpicker.GuideRepository, chatSvc *chat.Service, stockWF *workflow.StockWorkflow, ocr http.Handler, newsPipeline *news.Pipeline, newsRepo *news.Repository, conversationLogs *conversationlog.Repository, dashboardHandler *dashboard.Handler) *Server {
 	return &Server{
 		router:           r,
 		registry:         registry,
@@ -48,6 +50,7 @@ func NewServer(r *router.Router, registry *tool.Registry, analyzer *analyze.Anal
 		newsPipeline:     newsPipeline,
 		newsRepo:         newsRepo,
 		conversationLogs: conversationLogs,
+		dashboardHandler: dashboardHandler,
 	}
 }
 
@@ -97,6 +100,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 				http.NotFound(w, r)
 			}
 		})
+
+	if s.dashboardHandler != nil {
+		s.dashboardHandler.RegisterRoutes(mux)
+	}
 	}
 	if s.chat != nil {
 		chatHandler := chat.NewHandler(s.chat)

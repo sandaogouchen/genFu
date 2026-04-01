@@ -22,6 +22,7 @@ type AppConfig struct {
 	Decision  DecisionConfig  `yaml:"decision"`
 	NextOpen  NextOpenConfig  `yaml:"next_open"`
 	Access    AccessConfig    `yaml:"access"`
+	Dashboard DashboardConfig `yaml:"dashboard"`
 }
 
 type ServerConfig struct {
@@ -122,6 +123,15 @@ type AccessConfig struct {
 	AllowPaths []string `yaml:"allow_paths"`
 }
 
+// DashboardConfig raw YAML configuration for dashboard.
+type DashboardConfig struct {
+	ColorScheme string `yaml:"color_scheme"`
+	DefaultDays int    `yaml:"default_days"`
+	OutputDir   string `yaml:"output_dir"`
+	OfflineMode bool   `yaml:"offline_mode"`
+}
+
+
 type NormalizedConfig struct {
 	Server    ServerConfig
 	PG        NormalizedPGConfig
@@ -139,7 +149,8 @@ type NormalizedConfig struct {
 	News     NormalizedNewsConfig
 	Decision NormalizedDecisionConfig
 	NextOpen NormalizedNextOpenConfig
-	Access   NormalizedAccessConfig
+	Access    NormalizedAccessConfig
+	Dashboard NormalizedDashboardConfig
 }
 
 type NormalizedPGConfig struct {
@@ -219,6 +230,15 @@ type NormalizedAccessConfig struct {
 	APIKeys    []string
 	AllowPaths []string
 }
+
+// NormalizedDashboardConfig parsed dashboard configuration.
+type NormalizedDashboardConfig struct {
+	ColorScheme string
+	DefaultDays int
+	OutputDir   string
+	OfflineMode bool
+}
+
 
 type NormalizedNextOpenConfig struct {
 	Enabled   bool
@@ -554,6 +574,22 @@ func normalize(cfg AppConfig) (NormalizedConfig, error) {
 	if result.Access.Enabled && len(result.Access.APIKeys) == 0 {
 		return NormalizedConfig{}, errors.New("missing_access_api_keys")
 	}
+	result.Dashboard = NormalizedDashboardConfig{
+		ColorScheme: cfg.Dashboard.ColorScheme,
+		DefaultDays: cfg.Dashboard.DefaultDays,
+		OutputDir:   cfg.Dashboard.OutputDir,
+		OfflineMode: cfg.Dashboard.OfflineMode,
+	}
+	if result.Dashboard.ColorScheme == "" {
+		result.Dashboard.ColorScheme = "cn"
+	}
+	if result.Dashboard.DefaultDays <= 0 {
+		result.Dashboard.DefaultDays = 30
+	}
+	if result.Dashboard.OutputDir == "" {
+		result.Dashboard.OutputDir = "output"
+	}
+
 	return result, nil
 }
 
