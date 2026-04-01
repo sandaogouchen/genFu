@@ -36,10 +36,18 @@ type RuleScope struct {
 }
 
 // ConditionGroup is a recursive logical grouping of conditions.
+//
+// Two evaluation modes are supported:
+//   - Structured: populate Operator + Conditions/Groups for declarative AND/OR trees.
+//   - Expression: set Expression to an arbitrary expr-lang string (e.g.
+//     "pnl_pct >= 5 && daily_change < -2") for full expression power.
+//
+// When Expression is non-empty it takes precedence and Conditions/Groups are ignored.
 // Groups is a slice of pointers so that recursive evaluation can pass
 // each sub-group directly to EvaluateConditionGroup(*ConditionGroup, ...).
 type ConditionGroup struct {
 	Operator   string            `json:"operator" yaml:"operator"`
+	Expression string            `json:"expression,omitempty" yaml:"expression,omitempty"`
 	Conditions []Condition       `json:"conditions,omitempty" yaml:"conditions,omitempty"`
 	Groups     []*ConditionGroup `json:"groups,omitempty" yaml:"groups,omitempty"`
 }
