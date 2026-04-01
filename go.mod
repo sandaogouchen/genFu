@@ -56,6 +56,7 @@ require (
 
 require (
 	github.com/cloudwego/eino v0.7.34
+	github.com/expr-lang/expr v1.16.9
 	github.com/google/uuid v1.6.0
 	github.com/mattn/go-sqlite3 v1.14.16
 	gopkg.in/yaml.v3 v3.0.1
